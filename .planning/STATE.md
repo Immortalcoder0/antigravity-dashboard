@@ -13,8 +13,8 @@
 |-------|--------|
 | **Phase** | 1 — HTTP-served dashboard (Express origin) |
 | **Focus** | Load the React SPA from the Express `http://` origin so relative `/api` and `/ws` work; eliminate `file://` loading for the dashboard in production Electron. |
-| **Plan** | [01-01-PLAN.md](./phases/01-http-served-dashboard-express-origin/01-01-PLAN.md) (executed), [01-02-PLAN.md](./phases/01-http-served-dashboard-express-origin/01-02-PLAN.md) (next) |
-| **Status** | Phase 1 in progress — plan 01-01 complete; execute 01-02 next |
+| **Plan** | [01-01-PLAN.md](./phases/01-http-served-dashboard-express-origin/01-01-PLAN.md) (executed), [01-02-PLAN.md](./phases/01-http-served-dashboard-express-origin/01-02-PLAN.md) (implemented — **awaiting human-verify approval**) |
+| **Status** | Phase 1 in progress — plan 01-02 code complete; checkpoint blocked on manual verification per [01-02-SUMMARY.md](./phases/01-http-served-dashboard-express-origin/01-02-SUMMARY.md) |
 
 **Progress:** `░░░░░░░░░░ 0/12 phases complete` (see [ROADMAP.md](./ROADMAP.md))
 
@@ -41,6 +41,14 @@
 | No DevTools menu entry when packaged | Matches CONTEXT: shortcut-only access in production builds. |
 | Local HTTP + HTTPS allowed in `setWindowOpenHandler` | Supports OAuth provider pages and local callback ports (e.g. 51121) without generic in-app browsing. |
 
+### Decisions (from 01-02 execution)
+
+| Decision | Rationale |
+|----------|-----------|
+| Skip `AuthPrompt` when `window.__BONEYARD_BUILD` | Lets `boneyard-js build` capture the shell fixture without a running authenticated API. |
+| Banner driven by `useQuota` error + accounts fetch throw | Central hooks already model API health; avoids patching `window.fetch` globally. |
+| Keep `electronAPI` and add `antigravityShell` separately | Preserves 01-01 retry / packaged helpers while exposing a minimal read-only shell surface. |
+
 ### Open items
 
 - Pin exact Electron major for native rebuild alignment during implementation.
@@ -52,8 +60,8 @@
 
 ## Session continuity
 
-- **Last session:** 2026-04-05 — Completed [01-01-SUMMARY.md](./phases/01-http-served-dashboard-express-origin/01-01-SUMMARY.md) (Electron HTTP shell).
-- **Stopped at:** Plan **01-02** (boneyard skeleton, web preload bridge, API banner) not started.
+- **Last session:** 2026-04-05 — Implemented plan **01-02** (boneyard shell, crossfade, `antigravityShell`, Electron API banner); see [01-02-SUMMARY.md](./phases/01-http-served-dashboard-express-origin/01-02-SUMMARY.md).
+- **Stopped at:** **Human-verify checkpoint** for 01-02 — await **“approved”** or issue list after manual Electron/browser checks.
 - **Resume file:** None
 - **Research:** [research/SUMMARY.md](./research/SUMMARY.md) — stack and phase ordering validated.
 
