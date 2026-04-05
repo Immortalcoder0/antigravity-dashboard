@@ -25,6 +25,7 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "main": "electron/main.js",
   "workspaces": [
     "apps/*"
   ],
@@ -33,10 +34,17 @@
     "dev": "pnpm --filter=./apps/* run dev",
     "start": "pnpm --filter=@antigravity/backend start",
     "lint": "oxlint",
-    "lint:fix": "oxlint --fix"
+    "lint:fix": "oxlint --fix",
+    "electron": "electron .",
+    "electron:dev": "cross-env NODE_ENV=development electron ."
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
+    "electron": "^34.3.0",
     "oxlint": "^1.39.0"
   },
   "pnpm": {
