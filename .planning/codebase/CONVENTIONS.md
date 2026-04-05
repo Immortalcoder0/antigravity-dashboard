@@ -1,240 +1,126 @@
-# Code Conventions
+# Coding Conventions
 
 **Analysis Date:** 2026-04-05
 
-## TypeScript
+## Naming Patterns
 
-### Strict Mode
-- **Backend** (`apps/backend/tsconfig.json`): `strict: true`, `target: ES2020`, `module: commonjs`, `moduleResolution: node`
-- **Frontend** (`apps/web/tsconfig.json`): `strict: true`, `noUnusedLocals: true`, `noUnusedParameters: true`, `noFallthroughCasesInSwitch: true`, `jsx: react-jsx`, `module: ESNext`, `moduleResolution: bundler`
-- Both workspaces use TypeScript ^5.3.3
+**Files:**
+- Backend modules and utilities: `camelCase.ts` (e.g. `accountsFile.ts`, `authMiddleware.ts`).
+- React page/feature components: `PascalCase.tsx` in `apps/web/src/components/` (e.g. `AccountsPage.tsx`, `SettingsPage.tsx`).
+- Hooks: `use` prefix + `camelCase.ts` in `apps/web/src/hooks/` (e.g. `useQuota.ts`, `useDashboardStore.ts` lives under `stores/` with `use` prefix).
+- Types: shared interfaces in `apps/backend/src/types/` and `apps/web/src/types/` — keep names aligned when duplicated.
 
-### Type Patterns
-- **Barrel exports**: All types exported from `index.ts` barrel files:
-  - `apps/backend/src/types/index.ts` (422 lines) — backend types
-  - `apps/web/src/types/index.ts` (419 lines) — frontend types
-- **Types are manually duplicated** between backend and frontend. There is no shared package. Key duplicated types: `AccountStatus`, `RateLimitInfo`, `SubscriptionTier`, `ModelQuotaDisplay`, `LocalAccount`, `DashboardStats`, `WSMessage`, `UserPreferences`, `Notification`, `ApiCall`, `SessionEvent`, `CombinedLogEntry`, `LogFilters`, `FamilyBurnRate`, `AccountBurnRate`, `TimelineSlice`, `QuotaWindowInfo`, `QuotaWindowStatus`, `LogLevel`, `LogCategory`, `FileLogEntry`, `LogFileInfo`, `AccurateBurnRate`, `AddAccountPayload`, `DashboardSummary`
-- **`any` usage**: oxlint warns on `no-explicit-any` but does not error. `any` is used in several places:
-  - `server.ts` — `error: any` in catch blocks (lines 223, 287, 305, etc.), `any` for API response data (line 248)
-  - `monitor.ts` — `params: any[]` for dynamic SQL query params (line 305, 445), `details?: any` (line 130), `calls: any[]` (line 352)
-  - `useDashboardStore.ts` — `any[]` for `usageAccounts`, `models`, `hourlyStats`, `recentCalls`, `managerData`
-  - `websocket.ts` — `message: any` for client message handler (line 90)
-- **`import()` type syntax**: Used for cross-module type references, e.g., `import('./types').QuotaWindowInfo` in `server.ts`
+**Functions:**
+- `camelCase` for functions and methods.
+- Async helpers use no special prefix (e.g. `proxyToManager`, `isManagerAvailable` in `apps/backend/src/server.ts`).
+- Event-style handlers in UI: `handleX` / `onX` props as usual in React.
 
-### Generics
-- `ApiResponse<T>` defined in `apps/web/src/types/index.ts` (line 350) but usage is inconsistent — most endpoints return `{ success: boolean; data: any; error?: string }` directly instead of wrapping in `ApiResponse<T>`
+**Variables:**
+- `camelCase` for locals and properties.
+- `UPPER_SNAKE_CASE` for module-level constants (e.g. `ACCOUNTS_FILE_PATH`, `MANAGER_URL` in `apps/backend/src/server.ts`).
 
-## Naming
+**Types:**
+- Interfaces and type aliases: `PascalCase` (e.g. `LocalAccount`, `DashboardState` in `apps/web/src/stores/useDashboardStore.ts`).
+- No `I` prefix on interfaces.
+- Prefer `import type { ... }` for type-only imports where split (see `apps/web/src/components/AccountsPage.tsx`).
 
-### File Naming
-- **Backend**: `camelCase.ts` — `accountsFile.ts`, `quotaService.ts`, `authMiddleware.ts`, `retryHelper.ts`
-- **Frontend**: `PascalCase.tsx` for components, `camelCase.ts` for hooks — `DashboardPage.tsx`, `useQuota.ts`, `useDashboardStore.ts`
-- **No enforced filename case** in oxlint (`unicorn/filename-case: off`)
+## Code Style
 
-### Component Naming
-- **Page components**: `{Name}Page.tsx` — `DashboardPage.tsx`, `AccountsPage.tsx`, `LogsPage.tsx`, `SettingsPage.tsx`
-- **UI components**: Descriptive PascalCase — `QuotaPill.tsx`, `SubscriptionBadge.tsx`, `CreditsCard.tsx`, `UserInfoCard.tsx`, `QuotaWindowCard.tsx`, `TimeWindowCard.tsx`, `LastRefreshIndicator.tsx`, `TimelineVisualization.tsx`, `AuthPrompt.tsx`, `Navigation.tsx`, `OverviewTab.tsx`
+**Formatting:**
+- No Prettier or Biome config in the repository root; style follows existing files (2-space indent in sampled TS/TSX).
+- Not detected: enforced line length or quote style via tooling.
 
-### Hook Naming
-- `use{Feature}.ts` — `useAuth.ts`, `useQuota.ts`, `useBurnRate.ts`, `useWebSocket.ts`, `useLogs.ts`, `useTimeline.ts`, `useQuotaWindow.ts`, `useLanguageServer.ts`
+**Linting:**
+- Tool: **oxlint** (`oxlint` in root `package.json`).
+- Config: `.oxlintrc.json` at repository root.
+- Plugins: `typescript`, `import`, `unicorn`, `promise`.
+- Category defaults: `correctness` → error; `suspicious` / `perf` → warn; `pedantic` / `style` / `restriction` / `nursery` → off.
+- Notable rules: `no-debugger` → error; `no-console` → off; `no-unused-vars` → warn; `typescript/no-explicit-any` → warn; several `unicorn/*` rules explicitly off (e.g. `unicorn/no-null`, `unicorn/prefer-module`).
+- Ignore patterns include `dist`, `node_modules`, `coverage`, `tasks`, `*.min.js`.
 
-### Function Naming
-- **Backend services**: `camelCase` — `getMonitor()`, `getAccountsService()`, `getWebSocketManager()`, `getQuotaService()`
-- **Route handlers**: inline arrow functions in `server.ts`
-- **Utility functions**: `camelCase` — `timingSafeCompare()`, `extractTokenFromHeader()`, `validateToken()`
-
-### Variable Naming
-- `camelCase` throughout
-- Constants: `UPPER_SNAKE_CASE` — `OAUTH_REDIRECT_URI`, `OAUTH_SCOPES`, `AUTH_SESSION_TTL_MS`, `FIVE_HOURS_MS`
-- Environment variables: `UPPER_SNAKE_CASE` — `DASHBOARD_PORT`, `DASHBOARD_SECRET`, `CORS_ORIGINS`, `GOOGLE_CLIENT_ID`
-
-## Code Organization
-
-### Import Ordering (Backend)
-Observed pattern in `server.ts`:
-1. **dotenv** first (side-effect import for env loading)
-2. **Node built-ins** (`path`, `fs`, `http`, `crypto`, `url`)
-3. **Third-party packages** (`express`, `cors`, `helmet`, `express-rate-limit`)
-4. **Local services** (`./monitor`, `./services/*`)
-5. **Local types** (`./types`)
-6. **Local routes** (`./routes/proxy`)
-7. **Local utils** (`./utils/authMiddleware`, `./utils/appPaths`)
-
-### Import Ordering (Frontend)
-Observed pattern in `App.tsx`:
-1. **React** (`react`)
-2. **Zustand store** (`./stores/useDashboardStore`)
-3. **Custom hooks** (`./hooks/*`)
-4. **Third-party UI** (`lucide-react`)
-5. **Local components** (`./components/*`)
-6. **Local types** (`./types`)
-
-### Path Aliases
-- **Frontend only**: `@/*` → `./src/*` (defined in `tsconfig.json` and `vite.config.ts`)
-- **Backend**: No path aliases, uses relative imports
-
-### Module Boundaries
-- **Backend**: All routes defined in `server.ts` (2000+ lines). No separate route files except `routes/proxy.ts`
-- **Frontend**: Components organized by page in `components/`, data fetching in `hooks/`, state in `stores/`
-- **Services**: Each domain has its own file in `services/` — `quotaService.ts`, `accountsFile.ts`, `websocket.ts`, `fileLogger.ts`, `tierDetection.ts`, `quotaStrategy.ts`
-
-### Singleton Pattern
-All backend services use the `getXxxService()` factory pattern:
-```typescript
-// apps/backend/src/monitor.ts (line 754-761)
-let monitorInstance: UsageMonitor | null = null;
-export function getMonitor(): UsageMonitor {
-  if (!monitorInstance) {
-    monitorInstance = new UsageMonitor();
-  }
-  return monitorInstance;
-}
+**Run:**
+```bash
+pnpm run lint       # oxlint
+pnpm run lint:fix   # oxlint --fix
 ```
-Same pattern used in: `websocket.ts`, `accountsFile.ts`, `quotaService.ts`, `languageServerService.ts`, `fileLogger.ts`, `quotaStrategy.ts`
+
+**TypeScript (strictness):**
+- Backend: `apps/backend/tsconfig.json` — `strict: true`, CommonJS, `ES2020`.
+- Web: `apps/web/tsconfig.json` — `strict: true`, `noUnusedLocals` / `noUnusedParameters`, `noFallthroughCasesInSwitch`, path alias `@/*` → `./src/*`.
+- Backend verification: `pnpm --filter=@antigravity/backend run typecheck` runs `tsc --noEmit`.
+
+**Project anti-patterns (from `AGENTS.md`):**
+- Avoid `as any` and `@ts-ignore` — strict mode is the expectation.
+
+## Import Organization
+
+**Order (observed):**
+1. Side-effect imports first when needed (e.g. `dotenv` in `apps/backend/src/server.ts`).
+2. Node built-ins (`path`, `fs`, `crypto`).
+3. External packages (`express`, `cors`, `react`).
+4. Internal relative imports (`./services/...`, `../hooks/...`).
+5. `import type` may appear inline with value imports or grouped; type-only for React/large types is used in places.
+
+**Path aliases:**
+- Web only: `@/` → `apps/web/src/` (see `apps/web/tsconfig.json`).
+
+**Grouping:**
+- No enforced blank-line rule in tooling; one blank line between groups is common in larger files.
 
 ## Error Handling
 
-### Backend Error Pattern
-Every route in `server.ts` follows the same try/catch pattern:
-```typescript
-app.get('/api/endpoint', (req, res) => {
-  try {
-    // ... logic
-    res.json({ success: true, data: result });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-```
+**Patterns:**
+- Express route handlers: wrap logic in `try/catch`, respond with `res.status(500).json({ success: false, error: ... })` on failure (see `apps/backend/src/server.ts` routes such as `/api/accounts/local`).
+- Some async helpers return `null` or `false` on failure instead of throwing (e.g. `proxyToManager` returns `null` after `console.error`).
+- Empty `catch { }` used sparingly for cleanup (e.g. `activeAuthServer?.close()`).
+- `FileLogger` in `apps/backend/src/services/fileLogger.ts`: catch write failures, `console.error` with `[FileLogger]` prefix — do not throw from logging.
 
-### Response Format
-- **Success**: `{ success: true, data: T }`
-- **Error**: `{ success: false, error: string }`
-- **400 errors**: Used for validation failures (missing fields, invalid input)
-- **500 errors**: Used for unexpected errors (catch blocks)
-- **401/403**: Authentication failures in `authMiddleware.ts`
-
-### Frontend Error Pattern
-Hooks use `useState<string | null>` for error state:
-```typescript
-// apps/web/src/hooks/useQuota.ts (line 16)
-const [error, setError] = useState<string | null>(null);
-// ...
-setError(err instanceof Error ? err.message : 'Network error');
-```
-
-### SQL Error Handling
-- No try/catch around raw SQL queries in `monitor.ts` — errors propagate to route handlers
-- Parameterized queries used throughout (no string interpolation)
+**Error types:**
+- Catch clauses sometimes use `error: any` to read `.message` — oxlint warns on `any`; prefer narrowing or `unknown` + type guards in new code.
 
 ## Logging
 
-### Backend Logging
-- **Primary**: `console.log()` and `console.error()` with bracket-prefixed tags
-  - `[Server]`, `[OAuth]`, `[Proxy]`, `[WebSocketManager]`, `[LS Detect]`
-- **File logging**: `apps/backend/src/services/fileLogger.ts` — structured JSON logs with 7-day retention
-  - Log levels: `DEBUG`, `INFO`, `WARN`, `ERROR`
-  - Categories: `quota`, `api`, `auth`, `system`, `websocket`, `accounts`
-  - Format: `{ ts: number; level: LogLevel; cat: LogCategory; msg: string; data?: Record<string, any> }`
-  - Files named: `YYYY-MM-DD.log`
-- **oxlint config**: `no-console: off` — console usage is permitted
+**Framework:**
+- `console.log` / `console.error` widely used (allowed by oxlint `no-console: off`), often with bracketed prefixes (`[Server]`, `[Proxy]`, `[FileLogger]`).
+- Structured file logging: `FileLogger` class in `apps/backend/src/services/fileLogger.ts` — JSON lines per day under `~/.config/opencode/antigravity-dashboard/logs/`.
 
-### Frontend Logging
-- `console.error()` for fetch failures (e.g., `App.tsx` line 70)
-- No structured logging framework on frontend
+**Patterns:**
+- Log errors with enough context to identify the operation (manager proxy, sync, etc.).
+- Service boundaries: quota/proxy paths log via dedicated helpers or `FileLogger` where wired.
 
-## Component Patterns
+## Comments
 
-### React Components
-- **Functional components only** — no class components
-- **Named function exports** for pages: `export function DashboardPage()`
-- **Default exports** for main App: `export default App`
-- **Props**: Typed inline or via interface, destructured in function signature
-- **No CSS modules or styled-components** — Tailwind CSS exclusively
+**When to comment:**
+- Short section comments in large files (e.g. `server.ts`) for security, rate limits, or route groups.
+- Explain non-obvious behavior (env path resolution, Electron vs dev).
 
-### State Management
-- **Zustand** with `persist` middleware for localStorage persistence
-- Single store: `apps/web/src/stores/useDashboardStore.ts`
-- Persisted keys: `preferences`, `currentPage`, `accountFilter`, `notifications` (unread only, max 10)
-- Selectors defined as methods on the store (`getActiveAccount()`, `getFilteredAccounts()`)
+**JSDoc/TSDoc:**
+- Sparse; used for public methods where clarity helps (e.g. `FileLogger.log` in `apps/backend/src/services/fileLogger.ts`).
 
-### Custom Hooks Pattern
-```typescript
-// apps/web/src/hooks/useQuota.ts
-export function useQuota(pollingMs: number = 120000): UseQuotaResult {
-  const [quotas, setQuotas] = useState<AccountQuota[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  // ... fetch logic with useCallback
-  // ... polling with useEffect + setInterval
-  return { quotas, loading, error, cacheAge, lastRefresh, refresh };
-}
-```
-- All data fetching through hooks, never direct `fetch` in components
-- Hooks return typed result objects
-- Polling intervals configurable via parameters
+**TODO comments:**
+- Not standardized; search with `TODO`/`FIXME` if auditing.
 
-## API Conventions
+## Function Design
 
-### Route Naming
-- **RESTful pattern**: `/api/accounts`, `/api/accounts/:email`, `/api/stats`, `/api/models`
-- **Action suffixes**: `/api/accounts/quota/refresh`, `/api/accounts/quota/clear-cache`, `/api/accounts/switch/:email`
-- **Query parameters**: `?format=table`, `?email=`, `?hours=24`, `?limit=100`, `?offset=0`
+**Size:**
+- `apps/backend/src/server.ts` is a monolithic route file (2000+ lines) — new routes should still follow existing try/catch + JSON response patterns; consider splitting only when coordinated with architecture docs.
 
-### Route Organization
-- All routes defined inline in `server.ts` (2000+ lines)
-- Proxy routes extracted to `apps/backend/src/routes/proxy.ts`
-- Rate limiting applied globally to `/api` prefix
-- Auth middleware applied to `/api` prefix
+**Parameters:**
+- Options objects and destructuring in React components; Express uses `req, res` standard.
 
-### WebSocket
-- Path: `/ws`
-- Message format: `{ type: WSMessageType; data: any; timestamp: number; seq?: number }`
-- Message types: `initial`, `accounts_update`, `rate_limit_change`, `stats_update`, `new_call`, `heartbeat`, `config_update`
+**Return values:**
+- API JSON shape: `{ success: boolean, data?: ..., error?: string }` is common for success/error responses.
 
-## Environment & Config
+## Module Design
 
-### Environment Variables
-- Loaded from project root `.env` via `dotenv.config({ path: resolve(__dirname, '../../..', '.env') })` in `server.ts`
-- **Critical vars**: `DASHBOARD_PORT`, `DASHBOARD_SECRET`, `CORS_ORIGINS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `MANAGER_URL`, `PROXY_API_KEY`, `PROXY_ENABLED`, `API_RATE_LIMIT`, `NODE_ENV`, `DEV_MODE`
-- **`.env.example`** exists with placeholder credentials (do not modify — tokens are bound to client ID)
+**Exports:**
+- Backend services: singleton factories like `getAccountsService()`, `getMonitor()` (see `apps/backend/src/services/`).
+- React: default export for root `App` in `apps/web/src/App.tsx`; named exports for components as needed.
 
-### Config Files
-- **Backend**: `tsconfig.json` (ES2020, commonjs, strict)
-- **Frontend**: `tsconfig.json` (ES2020, ESNext, strict), `vite.config.ts`, `tailwind.config.js`, `postcss.config.js`
-- **Linting**: `.oxlintrc.json` (oxlint v1.39.0)
-- **Root**: `package.json` with npm workspaces
-
-## Anti-Patterns
-
-| Pattern | Why Forbidden |
-|---------|---------------|
-| Change OAuth credentials | Tokens cryptographically bound to plugin's client ID |
-| Export refresh tokens | Security — `/api/accounts/export` strips them |
-| `as any` / `@ts-ignore` | Strict mode enforced (oxlint warns) |
-| CSS modules | Tailwind only |
-| Direct fetch in components | Use hooks (`useQuota`, `useBurnRate`, etc.) |
-| Add routes outside `server.ts` | All routes centralized |
-| Direct SQLite access outside `monitor.ts` | Database layer isolated |
-| Import `.env` in service files | `server.ts` handles env loading |
-| Modify types without syncing to backend | Types duplicated between workspaces |
-
-## Linting (oxlint)
-
-- **Tool**: oxlint v1.39.0 (Rust-based, fast)
-- **Config**: `.oxlintrc.json`
-- **Plugins**: `typescript`, `import`, `unicorn`, `promise`
-- **Categories**: `correctness: error`, `suspicious: warn`, `perf: warn`, others off
-- **Key rules**:
-  - `no-debugger: error`
-  - `no-empty: warn`
-  - `no-unused-vars: warn`
-  - `typescript/no-explicit-any: warn`
-  - `no-console: off` (console allowed)
-  - `unicorn/filename-case: off` (no filename case enforcement)
-- **Commands**: `pnpm run lint`, `pnpm run lint:fix`
-- **Ignored**: `dist`, `node_modules`, `*.min.js`, `coverage`, `tasks`
+**Barrel files:**
+- Not a heavy pattern; imports target concrete files.
 
 ---
 
 *Convention analysis: 2026-04-05*
+*Update when patterns change*

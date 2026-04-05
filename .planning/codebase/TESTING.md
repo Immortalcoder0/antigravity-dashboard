@@ -1,324 +1,108 @@
-# Testing
+# Testing Patterns
 
 **Analysis Date:** 2026-04-05
 
-## Test Setup
+## Test Framework
 
-### Current Status: NO TEST FRAMEWORK
+**Runner:**
+- Not configured. Root `package.json` has no `test` script; `apps/backend/package.json` and `apps/web/package.json` have no test runner dependencies (no Vitest, Jest, or Node test runner).
 
-The antigravity-dashboard project has **no testing infrastructure**. There are no test dependencies, no test scripts, no test configuration files, and no test files within the `apps/` workspace.
+**Assertion library:**
+- Not applicable until a runner is added.
 
-### What Was Checked
-- **No test dependencies** in `package.json` (root, backend, or web)
-- **No test scripts** — only `build`, `dev`, `start`, `lint`, `lint:fix`
-- **No test config files** — no `jest.config.*`, `vitest.config.*`, `playwright.config.*`, `cypress.config.*` in `apps/`
-- **No test files** — no `*.test.ts`, `*.test.tsx`, `*.spec.ts`, `*.spec.tsx`, or `__tests__/` directories in `apps/`
-- **No CI/CD** — no `.github/workflows/`, no `.gitlab-ci.yml`
+**Run commands:**
+```bash
+pnpm run lint                                    # oxlint — current automated quality gate
+pnpm --filter=@antigravity/backend run typecheck # tsc --noEmit (backend)
+```
 
-### External Skill Tests (Not Part of This Project)
-The only test file in the repository is `.opencode/skills/dev-browser/src/snapshot/__tests__/snapshot.test.ts` — this belongs to the dev-browser skill, not the antigravity-dashboard project. It uses **vitest + playwright** but is unrelated to the dashboard codebase.
+There is no `pnpm test` or watch command today.
+
+## Test File Organization
+
+**Location:**
+- No `*.test.ts`, `*.spec.ts`, or `*.test.tsx` files under `apps/backend/src` or `apps/web/src` in this repository state.
+- No `vitest.config.*` or `jest.config.*` at repo root or in workspaces.
+
+**Naming:**
+- When adding tests, prefer co-located names: `moduleName.test.ts` next to `moduleName.ts` (common TypeScript convention; not yet present).
+
+**Structure:**
+```
+apps/
+├── backend/src/     # source only — no *.test.ts detected
+└── web/src/         # source only — no *.test.ts detected
+```
 
 ## Test Structure
 
-### Not Applicable (No Tests Exist)
+**Suite organization:**
+- Not applicable — no test suites in repo.
 
-When tests are added, the following structure is recommended based on existing codebase patterns:
+**Patterns to adopt when introducing tests:**
+- Use `describe` / `it` (or `test`) with a runner such as Vitest aligned with TypeScript workspaces.
+- Keep backend tests in `apps/backend` and frontend tests in `apps/web` so each package keeps its own config.
 
-**Recommended test file locations:**
-- **Backend**: `apps/backend/src/**/*.test.ts` (co-located with source)
-- **Frontend**: `apps/web/src/**/*.test.tsx` (co-located with source)
-
-**Recommended naming:**
-- `accountsFile.test.ts` — tests for `accountsFile.ts`
-- `quotaService.test.ts` — tests for `quotaService.ts`
-- `monitor.test.ts` — tests for `monitor.ts`
-- `authMiddleware.test.ts` — tests for `authMiddleware.ts`
-- `useQuota.test.ts` — tests for `useQuota.ts` hook
-
-## Existing Tests
-
-**None.** Zero test coverage across the entire codebase.
-
-### Untested Critical Areas
-
-| Area | Files | Risk |
-|------|-------|------|
-| OAuth flow | `server.ts` (lines 392-587) | High — authentication, token exchange |
-| Account CRUD | `server.ts` (lines 592-700) | High — data mutation |
-| Quota fetching | `services/quotaService.ts` | High — core business logic |
-| Account file watcher | `services/accountsFile.ts` | High — file I/O, state management |
-| WebSocket manager | `services/websocket.ts` | Medium — real-time updates |
-| SQLite operations | `monitor.ts` | High — data persistence |
-| API proxy | `services/apiProxy/` | High — request transformation |
-| Auth middleware | `utils/authMiddleware.ts` | High — security |
-| File logger | `services/fileLogger.ts` | Medium — logging |
-| Tier detection | `services/tierDetection.ts` | Medium — business logic |
-| All React components | `components/*.tsx` | Medium — UI rendering |
-| All custom hooks | `hooks/*.ts` | Medium — data fetching |
-| Zustand store | `stores/useDashboardStore.ts` | Medium — state management |
-
-## Testing Patterns
-
-### Recommended Patterns (Based on Codebase Architecture)
-
-#### Backend Unit Tests
-```typescript
-// apps/backend/src/services/accountsFile.test.ts
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { AccountsService } from './accountsFile';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import { mkdirSync, rmSync } from 'fs';
-
-describe('AccountsService', () => {
-  let service: AccountsService;
-  let testDir: string;
-
-  beforeEach(() => {
-    testDir = join(tmpdir(), 'antigravity-test-' + Date.now());
-    mkdirSync(testDir, { recursive: true });
-    service = new AccountsService(testDir);
-  });
-
-  afterEach(() => {
-    rmSync(testDir, { recursive: true, force: true });
-  });
-
-  it('should add an account', async () => {
-    const account = await service.addAccount({
-      email: 'test@example.com',
-      refreshToken: 'test-token',
-    });
-    expect(account.email).toBe('test@example.com');
-  });
-});
-```
-
-#### Database Tests (monitor.ts)
-```typescript
-// apps/backend/src/monitor.test.ts
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { UsageMonitor } from './monitor';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import { rmSync } from 'fs';
-
-describe('UsageMonitor', () => {
-  let monitor: UsageMonitor;
-  let dbPath: string;
-
-  beforeEach(() => {
-    dbPath = join(tmpdir(), `test-usage-${Date.now()}.db`);
-    monitor = new UsageMonitor(dbPath);
-  });
-
-  afterEach(() => {
-    monitor.close();
-    rmSync(dbPath, { force: true });
-  });
-
-  it('should log and retrieve API calls', () => {
-    monitor.logApiCall({
-      timestamp: Date.now(),
-      account_email: 'test@example.com',
-      model: 'claude-sonnet-4-5',
-      endpoint: '/v1/messages',
-      duration_ms: 1500,
-      status: 'success',
-    });
-
-    const stats = monitor.getAccountStats();
-    expect(stats).toHaveLength(1);
-    expect(stats[0].email).toBe('test@example.com');
-  });
-});
-```
-
-#### Frontend Hook Tests
-```typescript
-// apps/web/src/hooks/useQuota.test.tsx
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
-import { useQuota } from './useQuota';
-
-describe('useQuota', () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-  });
-
-  it('should fetch quotas on mount', async () => {
-    global.fetch = vi.fn().mockResolvedValue({
-      json: () => Promise.resolve({
-        success: true,
-        data: { quotas: [], cacheAge: 0 },
-      }),
-    });
-
-    const { result } = renderHook(() => useQuota(100));
-
-    await waitFor(() => {
-      expect(result.current.loading).toBe(false);
-    });
-    expect(result.current.quotas).toEqual([]);
-  });
-});
-```
-
-#### Auth Middleware Tests
-```typescript
-// apps/backend/src/utils/authMiddleware.test.ts
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { validateToken, requireAuth, isAuthEnabled } from './authMiddleware';
-
-describe('authMiddleware', () => {
-  const originalSecret = process.env.DASHBOARD_SECRET;
-
-  afterEach(() => {
-    process.env.DASHBOARD_SECRET = originalSecret;
-  });
-
-  describe('isAuthEnabled', () => {
-    it('should return false when no secret is set', () => {
-      delete process.env.DASHBOARD_SECRET;
-      expect(isAuthEnabled()).toBe(false);
-    });
-
-    it('should return true when secret is set', () => {
-      process.env.DASHBOARD_SECRET = 'test-secret';
-      expect(isAuthEnabled()).toBe(true);
-    });
-  });
-
-  describe('validateToken', () => {
-    it('should always return true when auth is disabled', () => {
-      delete process.env.DASHBOARD_SECRET;
-      expect(validateToken('anything')).toBe(true);
-    });
-
-    it('should reject invalid tokens when auth is enabled', () => {
-      process.env.DASHBOARD_SECRET = 'correct-secret';
-      expect(validateToken('wrong-token')).toBe(false);
-    });
-
-    it('should accept valid tokens', () => {
-      process.env.DASHBOARD_SECRET = 'test-secret';
-      expect(validateToken('test-secret')).toBe(true);
-    });
-  });
-});
-```
+**Setup/teardown:**
+- Not detected.
 
 ## Mocking
 
-### Recommended Mocking Strategy
+**Framework:**
+- Not applicable.
 
-#### What to Mock
-- **External APIs**: Google Cloud Code API (quota fetching), OAuth token endpoints
-- **File system**: `accountsFile.ts` — use temp directories
-- **Database**: `monitor.ts` — use in-memory SQLite (`:memory:`)
-- **WebSocket connections**: Mock `ws` server/client
-- **`fetch`**: Global fetch mock for frontend tests
-- **`process.env`**: For auth/config tests
+**Patterns:**
+- For future HTTP/route tests: mock `fetch` or inject dependencies rather than hitting live Google/manager URLs.
+- For SQLite: use isolated DB files or in-memory patterns if `better-sqlite3` is tested.
 
-#### What NOT to Mock
-- **Business logic**: Tier detection, quota calculations, burn rate calculations
-- **Type conversions**: Data transformation functions
-- **Utility functions**: Retry helpers, error helpers
+**What to mock:**
+- External APIs (Google Cloud, manager service), filesystem paths for accounts JSON, and network when testing proxy layers (`apps/backend/src/services/apiProxy/`).
 
-### Mock Pattern for Services
-```typescript
-// Mock singleton pattern
-vi.mock('./monitor', () => ({
-  getMonitor: vi.fn(() => mockMonitor),
-  UsageMonitor: vi.fn(() => mockMonitor),
-}));
-```
+**What not to mock:**
+- Pure transforms and small utilities until they need isolation.
 
-## CI Integration
+## Fixtures and Factories
 
-### Current Status: None
+**Test data:**
+- No shared fixtures directory detected.
 
-No CI/CD pipeline exists. No GitHub Actions, no GitLab CI, no test commands in any configuration.
+**Location:**
+- When adding tests, place reusable factories beside the test file or under `apps/backend/src/__tests__/fixtures/` / `apps/web/src/__tests__/fixtures/` only if shared across files.
 
-### Recommended CI Setup
-```yaml
-# .github/workflows/test.yml (recommended)
-name: Test
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 18
-          cache: 'pnpm'
-      - run: pnpm install
-      - run: pnpm run lint
-      - run: pnpm --filter=@antigravity/backend run typecheck
-      - run: pnpm --filter=@antigravity/backend run test
-      - run: pnpm --filter=@antigravity/web run test
-```
+## Coverage
 
-## Gaps
+**Requirements:**
+- No coverage threshold or CI coverage report detected (no `.github` workflows with tests in this snapshot).
 
-### Critical Testing Gaps
+**Configuration:**
+- Not applicable.
 
-1. **Zero test coverage** — No tests exist for any code
-2. **No test framework** — No vitest, jest, playwright, or cypress installed
-3. **No CI pipeline** — No automated test runs on push/PR
-4. **No type checking in CI** — `typecheck` script exists for backend but is not automated
-5. **No integration tests** — No end-to-end testing of API routes
-6. **No component tests** — No React component rendering tests
-7. **No mock infrastructure** — No test utilities, factories, or fixtures
-8. **No coverage requirements** — No coverage targets or reporting
+**View coverage:**
+- After adding a runner with coverage (e.g. Vitest + `--coverage`), document the exact script in root `package.json`.
 
-### Recommended Priority Order for Adding Tests
+## Test Types
 
-1. **Auth middleware** (`utils/authMiddleware.ts`) — Security-critical, simple to test
-2. **Account CRUD** (`services/accountsFile.ts`) — Core data operations
-3. **Database operations** (`monitor.ts`) — Data persistence, use temp SQLite
-4. **Quota service** (`services/quotaService.ts`) — Core business logic
-5. **Tier detection** (`services/tierDetection.ts`) — Pure functions, easy to test
-6. **API proxy converters** (`services/apiProxy/converter.ts`) — Request transformation
-7. **Zustand store** (`stores/useDashboardStore.ts`) — State management
-8. **Custom hooks** (`hooks/*.ts`) — Data fetching with mocked fetch
-9. **React components** (`components/*.tsx`) — UI rendering
-10. **WebSocket manager** (`services/websocket.ts`) — Real-time communication
+**Unit tests:**
+- Not present. Target pure functions first (e.g. `apps/backend/src/services/tierDetection.ts`, `apps/web/src/hooks/` helpers) when introducing tests.
 
-## Running Tests
+**Integration tests:**
+- Not present. Route-level tests would target `apps/backend/src/server.ts` or extracted routers; require a test HTTP client (supertest-style) if adopted.
 
-### Current Commands
-**No test commands exist.** The following scripts would need to be added:
+**E2E tests:**
+- Not used (no Playwright/Cypress in workspace `package.json` files).
 
-```bash
-# Recommended additions to package.json scripts:
+## Common Patterns
 
-# Root level
-"test": "pnpm -r run test"
+**Async testing:**
+- Not applicable until framework exists. Prefer `async`/`await` with `expect(...).resolves` / `rejects` if using Vitest/Jest-compatible APIs.
 
-# Backend (apps/backend/package.json)
-"test": "vitest run"
-"test:watch": "vitest"
-"test:coverage": "vitest run --coverage"
+**Error testing:**
+- Not applicable.
 
-# Frontend (apps/web/package.json)
-"test": "vitest run"
-"test:watch": "vitest"
-"test:coverage": "vitest run --coverage"
-```
-
-### Recommended Test Dependencies to Add
-```bash
-# Both workspaces
-pnpm add -D vitest
-
-# Frontend additionally needs
-pnpm add -D @testing-library/react @testing-library/jest-dom jsdom
-```
+**Snapshot testing:**
+- Not used.
 
 ---
 
 *Testing analysis: 2026-04-05*
+*Update when test patterns change*

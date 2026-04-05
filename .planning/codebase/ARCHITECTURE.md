@@ -2,348 +2,177 @@
 
 **Analysis Date:** 2026-04-05
 
-## System Overview
+## Pattern Overview
 
-The antigravity-dashboard is a **client-server monorepo** built with npm workspaces. It provides a real-time monitoring dashboard for multi-account Google Cloud API quotas, with an integrated Claude/OpenAI-compatible API proxy.
+**Overall:** Monolithic Express backend with a React SPA, optional Electron shell, and domain services exposed as singletons.
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    Browser (SPA)                     │
-│  React 18 + Tailwind CSS + Zustand + WebSocket      │
-└──────────────────────┬──────────────────────────────┘
-                       │ HTTP REST + WS
-┌──────────────────────▼──────────────────────────────┐
-│              Express Server (port 3456)              │
-│                                                      │
-│  ┌────────────┐  ┌───────────┐  ┌────────────────┐  │
-│  │ Dashboard  │  │ API Proxy │  │  SPA Static    │  │
-│  │ REST API   │  │ /v1/*     │  │  /apps/web/dist│  │
-│  └─────┬──────┘  └─────┬─────┘  └────────────────┘  │
-│        │               │                              │
-│  ┌─────▼───────────────▼──────────────────────────┐  │
-│  │              Service Layer                      │  │
-│  │  quotaService │ accountsFile │ apiProxy │ LS    │  │
-│  └─────┬───────────────────────┬──────────────────┘  │
-│        │                       │                      │
-│  ┌─────▼──────┐          ┌─────▼──────┐              │
-│  │  SQLite    │          │  Google    │              │
-│  │  usage.db  │          │  Cloud PA  │              │
-│  └────────────┘          └────────────┘              │
-└─────────────────────────────────────────────────────┘
-```
+**Key Characteristics:**
+- Single Node process hosts HTTP API, WebSocket, static SPA, and Claude/OpenAI-compatible proxy routes.
+- Business logic lives in `apps/backend/src/services/` and `apps/backend/src/monitor.ts`; HTTP wiring is concentrated in `apps/backend/src/server.ts`.
+- Real-time UI updates use WebSocket (`/ws`) fed by service events (accounts file, quotas, proxy rate limits).
+- External data: Google OAuth-backed quota APIs, local JSON accounts file, SQLite usage store, optional separate “manager” service for log sync.
 
-## Backend Architecture
+## Layers
 
-### Express App Structure
+**Client (browser or Electron renderer):**
+- Purpose: Dashboard UI, auth token handling, REST + WebSocket consumption.
+- Contains: React components, Zustand store, data hooks.
+- Location: `apps/web/src/`
+- Depends on: Backend HTTP/WebSocket (same origin in production; Vite proxy in dev — see `apps/web/vite.config.ts`).
+- Used by: End users; Electron loads dev URL or packaged `apps/web/dist/index.html` via `electron/main.js`.
 
-**Entry:** `apps/backend/src/server.ts` (~2000+ lines, monolithic route file)
+**HTTP + transport (Express):**
+- Purpose: CORS, Helmet, JSON body parsing, rate limiting, route registration, SPA fallback, HTTP server creation.
+- Contains: All `/api/*` handlers, static file serving, global error middleware, `createServer` + WebSocket attach.
+- Location: `apps/backend/src/server.ts`
+- Depends on: Services (`getMonitor`, `getAccountsService`, `getWebSocketManager`, `getQuotaService`, etc.), `apps/backend/src/routes/proxy.ts`, `apps/backend/src/utils/authMiddleware.ts`.
+- Used by: Browser/Electron, CLI clients using the proxy API.
 
-The Express app follows a layered architecture:
+**Proxy router module:**
+- Purpose: Claude/OpenAI-shaped API (`/v1/*`) and dashboard-scoped proxy management (`/api/proxy/*`).
+- Contains: `initializeProxyRoutes`, `proxyApiRouter`, `proxyManagementRouter`.
+- Location: `apps/backend/src/routes/proxy.ts`
+- Depends on: `apps/backend/src/services/apiProxy/` (`ApiProxyService`), monitor, auth middleware.
+- Used by: Mounted from `server.ts` before static middleware so API traffic is not served as files.
 
-1. **Middleware chain** (lines 44-75):
-   - `cors()` - configurable origins, defaults to localhost
-   - `helmet()` - CSP headers with `'unsafe-inline'` for scripts/styles
-   - `express.json({ limit: '50mb' })` - large payload support
-   - `express-rate-limit` - 100 req/min on `/api` routes
-   - `requireAuth` middleware - Bearer token auth (conditional on `DASHBOARD_SECRET`)
-   - Static file serving from `apps/web/dist/`
+**Domain services:**
+- Purpose: Account file lifecycle, quota polling, WebSocket broadcasting, API proxy conversion, language server bridge, structured file logging, quota strategy config.
+- Contains: EventEmitter-based and factory singletons (`getXxxService()`).
+- Location: `apps/backend/src/services/` (see `apps/backend/src/services/AGENTS.md`), plus `apps/backend/src/monitor.ts` for SQLite.
+- Depends on: Env vars (loaded in `server.ts`), filesystem paths from `apps/backend/src/utils/appPaths.ts`, Google APIs via `apps/backend/src/services/quotaService.ts`.
+- Used by: `server.ts`, `routes/proxy.ts`, `interceptor.ts`.
 
-2. **Service initialization** (lines 77-83):
-   - All services use the `getXxxService()` singleton factory pattern
-   - Services are instantiated at module load time in `server.ts`
-   - `QuotaService` (120s polling), `LanguageServerService` (90s polling), `WebSocketManager`, `AccountsFileService`, `FileLogger` (7-day retention)
+**Persistence and observability:**
+- Purpose: SQLite for API call history, burn rate, snapshots; JSON file for OAuth accounts; optional log sync from manager.
+- Contains: `UsageMonitor` in `apps/backend/src/monitor.ts`; raw read of `antigravity-accounts.json` in `server.ts` for token-backed quota polling.
+- Location: DB path under `~/.config/opencode/antigravity-dashboard/usage.db` (via `getAppHomeDir()` in `apps/backend/src/utils/appPaths.ts`); accounts path `~/.config/opencode/antigravity-accounts.json` used in `apps/backend/src/services/accountsFile.ts` and `server.ts`.
 
-3. **Route organization** - All routes defined inline in `server.ts`:
-   - `/api/accounts/*` - Account CRUD, quota, stats
-   - `/api/auth/google/*` - OAuth PKCE flow with local callback server (port 51121)
-   - `/api/logs/*` - Combined logs, file logs, import
-   - `/api/proxy/*` - Proxy management (dashboard auth)
-   - `/v1/messages` - Claude API proxy (proxy API key auth)
-   - `/v1/chat/completions` - OpenAI API proxy (proxy API key auth)
-   - `/ws` - WebSocket endpoint
-
-### Service Layer Design
-
-All services follow consistent patterns:
-
-**Singleton Factory Pattern:**
-```typescript
-// Every service has this pattern
-let instance: ServiceClass | null = null;
-export function getServiceClass(param?): ServiceClass {
-  if (!instance) {
-    instance = new ServiceClass(param);
-  }
-  return instance;
-}
-```
-
-**Core Services:**
-
-| Service | File | Purpose |
-|---------|------|---------|
-| `UsageMonitor` | `apps/backend/src/monitor.ts` | SQLite operations (better-sqlite3), burn rate calculation, quota snapshots, combined log queries |
-| `QuotaService` | `apps/backend/src/services/quotaService.ts` | Google Cloud Code API polling, token refresh, quota caching, exponential backoff retry |
-| `AccountsFileService` | `apps/backend/src/services/accountsFile.ts` | File watcher (chokidar) on `~/.config/opencode/antigravity-accounts.json`, CRUD, rate limit tracking, rotation strategies |
-| `WebSocketManager` | `apps/backend/src/services/websocket.ts` | WebSocket server with batching (100ms), heartbeat (30s), subscription filtering |
-| `ApiProxyService` | `apps/backend/src/services/apiProxy/index.ts` | Claude/OpenAI → Antigravity protocol conversion, SSE streaming, account selection |
-| `LanguageServerService` | `apps/backend/src/services/languageServer/languageServerService.ts` | VS Code extension bridge via gRPC-Web, /proc scanning (Linux-only) |
-| `QuotaStrategyManager` | `apps/backend/src/services/quotaStrategy.ts` | Model grouping from `config/quotaStrategy.json`, display name resolution |
-| `FileLogger` | `apps/backend/src/services/fileLogger.ts` | JSON file logging with daily rotation, 7-day retention |
-| `TierDetection` | `apps/backend/src/services/tierDetection.ts` | FREE/PRO detection from reset time patterns (hourly=PRO, daily=FREE) |
-
-### Database Layer
-
-**File:** `apps/backend/src/monitor.ts`
-
-Single `UsageMonitor` class encapsulates all SQLite access via `better-sqlite3`. Tables:
-
-- `api_calls` - Logged API requests with tokens, duration, status, source (internal/proxy/manager)
-- `session_events` - Account rotations, session recoveries, quota warnings
-- `account_status` - Rate limit state per account
-- `quota_snapshots` - Time-series quota percentages for accurate burn rate calculation
-
-**Key pattern:** No other file accesses SQLite directly. All queries go through `UsageMonitor` methods.
-
-### Authentication
-
-**File:** `apps/backend/src/utils/authMiddleware.ts`
-
-- **Token-based auth:** `DASHBOARD_SECRET` env var enables Bearer token authentication
-- **Timing-safe comparison:** Uses `crypto.timingSafeEqual` to prevent timing attacks
-- **WebSocket auth:** Token passed as query parameter (`/ws?token=...`)
-- **Conditional:** When `DASHBOARD_SECRET` is not set, auth is disabled and server binds to `127.0.0.1`
-- **Proxy API key auth:** Separate `PROXY_API_KEY` for `/v1/*` routes (Anthropic-style key format)
-
-## Frontend Architecture
-
-### Component Hierarchy
-
-**Entry:** `apps/web/src/main.tsx` → `apps/web/src/App.tsx`
-
-```
-App.tsx
-├── Header (sticky, with nav)
-│   ├── Brand (Antigravity logo)
-│   ├── LastRefreshIndicator (quota + usage)
-│   ├── WS connection status
-│   ├── Theme toggle
-│   └── Refresh button
-├── Navigation (Dashboard, Accounts, Logs, Settings)
-└── Page Router (conditional render)
-    ├── DashboardPage
-    │   ├── StatsCard (fleet stats grid)
-    │   ├── IDE Account Card (from Language Server)
-    │   ├── TimeWindowCard (timeline visualization)
-    │   ├── QuotaWindowCard (5-hour window)
-    │   ├── CurrentAccountCard
-    │   └── BestAccountsCard
-    ├── AccountsPage
-    │   ├── OverviewTab
-    │   │   ├── UserInfoCard
-    │   │   ├── CreditsCard
-    │   │   ├── StatsCard grid
-    │   │   └── AccountRow (expandable)
-    │   │       └── TimelineVisualization
-    │   └── SettingsPage
-    ├── LogsPage
-    │   └── LogsDashboard
-    └── SettingsPage
-```
-
-### Data Fetching Patterns
-
-**Custom hooks** (`apps/web/src/hooks/`) encapsulate all API communication:
-
-| Hook | File | Purpose | Polling Interval |
-|------|------|---------|-----------------|
-| `useWebSocket` | `hooks/useWebSocket.ts` | WS connection, message handling, reconnection with exponential backoff | N/A (event-driven) |
-| `useQuota` | `hooks/useQuota.ts` | Quota fetching from `/api/accounts/quota` | 120s |
-| `useBurnRate` | `hooks/useBurnRate.ts` | Burn rate from `/api/accounts/burn-rate-accurate` | 60s |
-| `useAuth` | `hooks/useAuth.ts` | Bearer token management, sessionStorage persistence | N/A |
-| `useLanguageServer` | `hooks/useLanguageServer.ts` | VS Code extension connection status, credits | 30s |
-| `useQuotaWindow` | `hooks/useQuotaWindow.ts` | 5-hour quota window status | 30s |
-| `useTimeline` | `hooks/useTimeline.ts` | Hourly usage timeline data | N/A |
-| `useLogs` | `hooks/useLogs.ts` | Combined log fetching with pagination | N/A |
-
-**Pattern:** Hooks manage their own `useState` + `useEffect` polling loops. Components call hooks and consume results. No React Query or SWR - plain `fetch` with `setInterval`.
-
-### State Management
-
-**File:** `apps/web/src/stores/useDashboardStore.ts`
-
-**Zustand store** with `persist` middleware (localStorage):
-
-- **Persisted keys:** `preferences`, `currentPage`, `accountFilter`, unread `notifications`
-- **Non-persisted:** `localAccounts`, `usageAccounts`, `models`, `hourlyStats`, `recentCalls`
-- **Computed selectors:** `getFilteredAccounts()` applies filter + search to `localAccounts`
-- **Account selection:** `selectedAccounts[]` for bulk actions
-- **Filter/Search:** `accountFilter` (all/available/low_quota/PRO/ULTRA/FREE) + `accountSearch`
-
-**Store update flow:**
-1. WebSocket messages trigger store setters (`setLocalAccounts`, `setAccountsStats`)
-2. Hook polling results update store state
-3. Components read from store via `useDashboardStore()` selector
-
-## Real-time Architecture
-
-### WebSocket Server
-
-**File:** `apps/backend/src/services/websocket.ts`
-
-**Connection lifecycle:**
-1. Client connects to `/ws` (with optional `?token=` auth)
-2. Server creates `ClientInfo` with default subscriptions: `initial`, `accounts_update`, `rate_limit_change`, `stats_update`, `heartbeat`
-3. Client can `subscribe`/`unsubscribe` to specific event types
-4. Heartbeat every 30s with ping/pong liveness check (60s timeout)
-
-**Message batching:**
-- Messages queued with 100ms flush interval
-- Single message → immediate broadcast
-- Multiple messages → batched into `stats_update` with `seq` number
-
-**Event types:**
-- `initial` - Full state on connect (accounts + stats)
-- `accounts_update` - Account diffs (add/update/remove)
-- `rate_limit_change` - Rate limit status changes
-- `stats_update` - Dashboard statistics updates
-- `heartbeat` - Keepalive
-- `new_call` - New API call logged (from interceptor)
-- `config_update` - Configuration changes
-
-### WebSocket Client
-
-**File:** `apps/web/src/hooks/useWebSocket.ts`
-
-- Auto-connects on mount with `isAuthenticated` guard
-- Reconnection with exponential backoff: `3s * 1.5^attempts`, max 30s, 10 attempts
-- Debounced account diff handling (50ms) to batch rapid updates
-- Token passed as query parameter for auth
-
-## API Proxy Architecture
-
-### Request Transformation Pipeline
-
-**Files:** `apps/backend/src/services/apiProxy/`
-
-```
-Client Request (Claude/OpenAI format)
-         │
-         ▼
-┌─────────────────────┐
-│  proxy.ts routes    │  ← API key validation
-└────────┬────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│  ApiProxyService    │  ← Account selection, token context
-│  (index.ts)         │
-└────────┬────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│  converter.ts       │  ← Format conversion + protocol signatures
-└────────┬────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│  AntigravityClient  │  ← HTTP call to Google Cloud PA
-│  (client.ts)        │     with retry logic
-└────────┬────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│  streaming.ts       │  ← SSE formatting back to client
-└─────────────────────┘
-```
-
-**Key conversion steps:**
-1. **Model mapping:** `mapModel()` converts client model names to Google Cloud PA model IDs
-2. **Protocol signatures:** Base64 `thought` signatures injected for Antigravity API compatibility
-3. **Tool name mapping:** `getOriginalToolName()` / `sanitizeToolName()` for tool call translation
-4. **Account selection:** Uses active account set by VS Code extension (passthrough mode)
-5. **SSE streaming:** Converts Google Cloud PA streaming events to Claude SSE or OpenAI SSE format
-6. **Heartbeat:** 30s keepalive during long streaming responses
-
-**Two routers:**
-- `proxyApiRouter` (`/v1/*`) - Protected by proxy API key
-- `proxyManagementRouter` (`/api/proxy/*`) - Protected by dashboard auth
+**Cross-cutting instrumentation:**
+- Purpose: Optional WS broadcast for internal Antigravity traffic.
+- Location: `apps/backend/src/interceptor.ts` (`setWsManager`, `AntigravityInterceptor`) — wired from `server.ts` with `setWsManager(wsManager)`.
 
 ## Data Flow
 
-### Quota Fetching Flow
+**REST (dashboard API):**
 
-```
-1. QuotaService.startPolling() (every 120s)
-   └─→ getAccounts() → for each account:
-       └─→ refreshAccessToken(refreshToken) → Google OAuth
-       └─→ fetchAvailableModels(accessToken) → Google Cloud PA API
-       └─→ parseQuotaResponse() → AccountQuota
-       └─→ cache.accounts.set(email, result)
-       └─→ emit('quotas_updated', results)
+1. Client calls `fetch('/api/...')` (with optional `Authorization: Bearer` when `DASHBOARD_SECRET` auth is enabled — `apps/backend/src/utils/authMiddleware.ts`).
+2. `express-rate-limit` applies to `/api` (`apps/backend/src/server.ts`).
+3. `requireAuth` runs for `/api` when auth is configured.
+4. Route handler reads/writes via `getAccountsService()`, `getMonitor()`, `getQuotaService()`, `getLanguageServerService()`, or proxies to `MANAGER_URL` for manager-specific routes.
+5. JSON response; errors may hit the Express error middleware at the bottom of `server.ts`.
 
-2. Frontend: useQuota() polls /api/accounts/quota
-   └─→ quotaService.getCachedQuotas() → return cached data
-   └─→ If cache stale → force refresh
+**WebSocket (live dashboard):**
 
-3. WebSocket: quota changes → broadcast to clients
-```
+1. HTTP `Server` from `createServer(app)` in `server.ts`; `WebSocketManager.initialize(server, '/ws')` (`apps/backend/src/services/websocket.ts`).
+2. Clients connect to `/ws`; optional `verifyClient` uses `validateWebSocketAuth` when auth is enabled.
+3. `accountsService` events (`accounts_loaded`, `accounts_changed`, `rate_limits_updated`, etc.) and `quotaService` (`quotas_updated`), `languageServerService`, and proxy rate-limit notifier call `wsManager.broadcastNow` / typed helpers.
+4. React uses `useWebSocket` (`apps/web/src/hooks/useWebSocket.ts`) when authenticated.
 
-### Account Change Flow
+**Development vs production (web):**
 
-```
-1. AccountsFileService watches antigravity-accounts.json (chokidar)
-   └─→ File changes → loadAccountsFile()
-   └─→ processAccounts() → LocalAccount[]
-   └─→ calculateDiffs() → AccountDiff[]
-   └─→ emit('accounts_changed', diffs)
+1. **Dev:** Vite (`apps/web/vite.config.ts`) proxies `/api` → `http://localhost:3456` and `/ws` → `ws://localhost:3456`; UI runs on port 5173.
+2. **Prod / `pnpm start`:** Express serves `apps/web/dist` from `../../web/dist` relative to backend dist (`server.ts` `express.static` and `sendFile` for SPA fallback).
 
-2. server.ts listens to events → wsManager.broadcast()
-   └─→ WebSocketManager queues message (100ms batch)
-   └─→ flushQueue() → broadcast to all connected clients
+**Quota polling pipeline:**
 
-3. Frontend: useWebSocket() receives message
-   └─→ handleAccountsUpdate(diff) (debounced 50ms)
-   └─→ setLocalAccounts(updatedAccounts) → Zustand store
-   └─→ Components re-render
-```
+1. `quotaService.startPolling(getRawAccountsForQuota)` (`server.ts`) uses refresh tokens from the accounts file.
+2. `QuotaService` (`apps/backend/src/services/quotaService.ts`) calls Google Cloud Code / Antigravity endpoints; emits `quotas_updated`.
+3. `server.ts` listeners record snapshots via `monitor.recordQuotaSnapshot`, broadcast over WebSocket, and trigger file logging.
 
-### API Proxy Call Flow
+**API proxy (Claude/OpenAI clients):**
 
-```
-1. Client POST /v1/messages (Claude format)
-   └─→ validateApiKey() → proxy API key check
-   └─→ getTokenContext() → select account + refresh token
-   └─→ generateClaudeRequestBody() → convert to Antigravity format
-   └─→ AntigravityClient.generateStream() → Google Cloud PA
-   └─→ StreamCallback → formatClaudeSSE() → client
-   └─→ logProxyRequest() → monitor.logApiCall() → SQLite
-   └─→ wsManager.broadcastNow({ type: 'new_call' }) → frontend
-```
+1. Client sends requests to `/v1/messages` or `/v1/chat/completions` (mounted via `proxyApiRouter` from `routes/proxy.ts`).
+2. `ApiProxyService` (`apps/backend/src/services/apiProxy/`) uses token provider callbacks registered in `initializeProxyRoutes` (access token from `quotaService`, account lists from file + rotation logic).
+3. `proxyLogger` logs through `monitor.logApiCall`; `rateLimitNotifier` updates accounts + WebSocket on 429-style limits.
 
-## Design Patterns
+**Electron:**
 
-### Singleton Services
-Every backend service uses a module-level singleton with lazy initialization via `getXxxService()`. This ensures single instances across the Express app without dependency injection.
+1. `electron/main.js` spawns `node` with `apps/backend/dist/server.js` (dev) or `resources/backend/server.js` (packaged), sets `DOTENV_CONFIG_PATH` for `.env`.
+2. Window loads `http://localhost:5173` in dev or `apps/web/dist/index.html` in production.
 
-### EventEmitter Pattern
-Services extend Node.js `EventEmitter` or implement their own event system:
-- `QuotaService` → `emit('quotas_updated')`
-- `AccountsFileService` → `emit('accounts_changed')`, `emit('rate_limit_cleared')`, `emit('rotation')`
-- `WebSocketManager` → broadcasts to clients (not EventEmitter, but pub/sub)
+**State Management:**
 
-### Repository Pattern
-`UsageMonitor` in `monitor.ts` is the sole gateway to SQLite. No other file constructs SQL queries.
+- **Server:** In-memory singleton service state + SQLite + JSON file; no separate app-tier cache beyond `QuotaService` token cache.
+- **Client:** Zustand in `apps/web/src/stores/useDashboardStore.ts`; server truth for accounts/quota refreshed via REST + WebSocket.
 
-### Strategy Pattern
-Account rotation in `AccountsFileService` supports 6 strategies: `round_robin`, `least_recently_used`, `highest_quota`, `random`, `weighted`, `sticky`. Each is a private method selected via `applyStrategy()`.
+## Key Abstractions
 
-### Adapter Pattern
-`ApiProxyService` adapts between Claude API format, OpenAI API format, and Google Cloud PA (Antigravity) format. The `converter.ts` module handles request/response transformation.
+**UsageMonitor (`getMonitor`):**
+- Purpose: SQLite access for API calls, session events, quota snapshots, burn rate, exports.
+- Examples: `apps/backend/src/monitor.ts`
+- Pattern: Single instance constructed in `server.ts` and passed implicitly via `getMonitor()` imports.
 
-### Observer Pattern
-File watcher (chokidar) on `antigravity-accounts.json` triggers reload and diff calculation, which broadcasts via WebSocket to all connected clients.
+**AccountsFileService (`getAccountsService`):**
+- Purpose: Watch `antigravity-accounts.json`, normalize accounts, rotation, rate-limit bookkeeping, emit events.
+- Examples: `apps/backend/src/services/accountsFile.ts`
+- Pattern: `EventEmitter` + chokidar watcher; `start()` / `stop()` tied to server lifecycle.
+
+**WebSocketManager (`getWebSocketManager`):**
+- Purpose: Fan-out batched messages, heartbeat, subscription filtering.
+- Examples: `apps/backend/src/services/websocket.ts`
+- Pattern: Class initialized with shared `http.Server`; exported singleton accessor.
+
+**QuotaService (`getQuotaService`):**
+- Purpose: Poll Google/Antigravity quota APIs, cache, token refresh.
+- Examples: `apps/backend/src/services/quotaService.ts`
+- Pattern: `EventEmitter`; polling interval configured from `server.ts` (e.g. 120000 ms).
+
+**ApiProxyService:**
+- Purpose: Translate OpenAI/Claude requests to Antigravity backend calls.
+- Examples: `apps/backend/src/services/apiProxy/index.ts`, wired in `apps/backend/src/routes/proxy.ts`
+- Pattern: Injected `TokenProvider` + optional loggers/notifiers from `initializeProxyRoutes`.
+
+**LanguageServerService:**
+- Purpose: Discover and talk to VS Code extension / language server for credits and snapshots.
+- Examples: `apps/backend/src/services/languageServer/`
+- Pattern: Async connect + polling; events forwarded to WebSocket from `server.ts`.
+
+## Entry Points
+
+**Backend process (primary):**
+- Location: `apps/backend/src/server.ts` (compiled to `apps/backend/dist/server.js`; `package.json` `"start": "node dist/server.js"`).
+- Triggers: `pnpm start`, `apps/backend` dev script, Electron `spawn` in `electron/main.js`.
+- Responsibilities: Load `.env`, build Express app, mount routers and static files, attach WebSocket, start services (polling, watchers, manager log sync), listen on `DASHBOARD_PORT` (default 3456).
+
+**Backend package export / optional CLI run:**
+- Location: `apps/backend/src/index.ts`
+- Triggers: Import from other packages; or `node` with `index` as main when executed directly.
+- Responsibilities: Re-export `app`, `server`, `monitor`, services; delegates to `./server` when run as main.
+
+**Web SPA:**
+- Location: `apps/web/src/main.tsx` → `apps/web/src/App.tsx`
+- Triggers: Browser or Electron `loadURL` / `loadFile`.
+- Responsibilities: Theme, auth gate, `useWebSocket`, page routing between dashboard tabs, `fetch` to `/api/accounts/local` and related hooks.
+
+**Electron shell:**
+- Location: `electron/main.js`, preload `electron/preload.js`
+- Triggers: `pnpm electron:dev` / `electron:preview` / packaged app (`package.json` `main`: `electron/main.js`).
+- Responsibilities: Start backend child process, open `BrowserWindow`, load Vite dev or built `apps/web/dist`.
+
+## Error Handling
+
+**Strategy:** Try/catch inside route handlers returning `{ success: false, error }`; global Express error middleware for thrown errors; `process.on('uncaughtException' / 'unhandledRejection')` log via `fileLogger`.
+
+**Patterns:**
+- Most `/api` routes use `try/catch` and `res.status(500).json(...)`.
+- `app.use((err, req, res, _next) => ...)` at end of `server.ts` for unhandled errors.
+- WebSocket parse errors logged in `websocket.ts`; connection failures use `verifyClient` callback.
+
+## Cross-Cutting Concerns
+
+**Logging:**
+- `apps/backend/src/services/fileLogger.ts` for structured logs; `console` for server lifecycle; proxy logs integrated into monitor via `proxyLogger` object in `server.ts`.
+
+**Validation:**
+- Request bodies parsed as JSON (`express.json`); individual routes validate shape inline; no shared Zod layer in backend.
+
+**Authentication:**
+- Optional dashboard auth: `apps/backend/src/utils/authMiddleware.ts` (`requireAuth`, `isAuthEnabled`, `validateWebSocketAuth`); proxy API uses separate API key from `ApiProxyService` config (`routes/proxy.ts`).
+
+**CORS / security:**
+- `cors` with configurable `CORS_ORIGINS`; `helmet` CSP in `server.ts`; rate limit on `/api`.
 
 ---
 
 *Architecture analysis: 2026-04-05*
+*Update when major patterns change*

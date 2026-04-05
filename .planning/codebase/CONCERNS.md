@@ -1,212 +1,181 @@
-# Technical Concerns
+# Codebase Concerns
 
 **Analysis Date:** 2026-04-05
 
-## Critical Risks
+## Tech Debt
 
-### Monolithic Server File (2224 lines)
-- **File:** `apps/backend/src/server.ts` (2224 lines)
-- **Impact:** All API routes, OAuth flow, WebSocket initialization, static file serving, and server bootstrap code live in a single file. This makes it extremely difficult to navigate, test, and modify safely. Adding a new endpoint requires editing an already massive file.
-- **Fix approach:** Extract routes into separate router modules (e.g., `routes/accounts.ts`, `routes/analytics.ts`, `routes/languageServer.ts`, `routes/oauth.ts`).
+**Monolithic HTTP surface in `server.ts`:**
+- Issue: Nearly all Express routes, static SPA fallback, WebSocket wiring side effects, and startup banner live in one file (~2200+ lines).
+- Why: Single-file growth without extraction.
+- Impact: Harder reviews, higher merge conflict risk, and unclear boundaries for new endpoints.
+- Fix approach: Split by domain (e.g. `routes/accounts.ts`, `routes/logs.ts`, `routes/analytics.ts`) and mount sub-routers from `apps/backend/src/server.ts`; keep shared middleware in one module.
 
-### Type Duplication Between Frontend and Backend
-- **Files:** `apps/backend/src/types/index.ts` (422 lines), `apps/web/src/types/index.ts` (419 lines)
-- **Impact:** Types are manually duplicated across both workspaces. Many interfaces are identical (`LocalAccount`, `AccountStatus`, `RateLimitInfo`, `DashboardStats`, `WSMessage`, `ApiCall`, `SessionEvent`, `CombinedLogEntry`, `LogFilters`, `FamilyBurnRate`, `AccountBurnRate`, `TimelineSlice`, `UserPreferences`, `DEFAULT_PREFERENCES`, `Notification`, `AddAccountPayload`, `DashboardSummary`, `QuotaWindowInfo`, `QuotaWindowStatus`, `LogLevel`, `LogCategory`, `FileLogEntry`, `LogFileInfo`, `AccurateBurnRate`). Any change to a shared type must be manually synced — if forgotten, runtime errors occur when the frontend consumes mismatched data shapes.
-- **Fix approach:** Create a shared `packages/types` workspace that both apps import from.
+**API proxy router never registers `/v1` handlers:**
+- Issue: `initializeProxyRoutes` in `apps/backend/src/routes/proxy.ts` constructs `ApiProxyService` and returns `apiRouter`, but no `apiRouter.post('/v1/...')` (or equivalent) is defined. `validateApiKey` in `apps/backend/src/services/apiProxy/index.ts` is never called from routing code.
+- Why: Incomplete wiring between `ApiProxyService` and Express.
+- Impact: Startup banner in `apps/backend/src/server.ts` advertises `http://${bindHost}:${PORT}/v1/messages` and `/v1/chat/completions`, but those paths are not handled by the proxy layer; requests are likely to fall through to the SPA `app.get('*', ...)` handler and return `index.html` instead of API responses.
+- Fix approach: Register routes on `apiRouter` (or `app`) that parse `x-api-key` / `Authorization`, call `proxyService.validateApiKey`, then `handleClaudeRequest` / `handleOpenAIRequest`; add integration tests for `/v1` responses.
 
-### No Test Coverage
-- **Impact:** Zero test files detected anywhere in the codebase. No Jest, Vitest, or any testing framework is configured. All changes are unverified — any regression in quota calculation, OAuth flow, or proxy routing would only be caught manually.
-- **Fix approach:** Add Vitest (matches Vite stack) with unit tests for services and integration tests for API routes.
+**Unused configuration subsystem:**
+- Issue: `getConfigManager` / `apps/backend/src/utils/configManager.ts` (defaults include `server.host: '0.0.0.0'` and broad `corsOrigins`) is not imported by `server.ts`; actual bind host comes from `getBindHost()` in `apps/backend/src/utils/authMiddleware.ts`.
+- Why: Ported or planned feature not integrated.
+- Impact: Misleading defaults if future code starts reading `configManager`; two sources of truth for “how the server listens.”
+- Fix approach: Either wire `ConfigManager` into server startup (port, CORS, bind host) or remove/trim unused exports and document a single config path.
 
-## Code Quality Issues
+**Duplicated TypeScript types across apps:**
+- Issue: Shared shapes are maintained in `apps/backend/src/types/` and `apps/web/src/types/` manually (per `AGENTS.md`).
+- Why: No shared package or codegen.
+- Impact: API contract drift between UI and backend.
+- Fix approach: Add a small shared workspace package or generate types from a single schema; at minimum, add a checklist in PR review for paired edits.
 
-### Large Files
-| File | Lines | Concern |
-|------|-------|---------|
-| `apps/backend/src/server.ts` | 2224 | All routes, OAuth, WS, bootstrap |
-| `apps/backend/src/services/accountsFile.ts` | 816 | Account CRUD + rotation strategies |
-| `apps/backend/src/services/apiProxy/converter.ts` | 718 | Protocol conversion logic |
-| `apps/backend/src/services/apiProxy/index.ts` | 680 | Proxy router initialization |
-| `apps/backend/src/monitor.ts` | 761 | All SQLite operations |
-| `apps/web/src/components/AccountsPage.tsx` | 774 | Complex UI with table/list views |
-| `apps/web/src/components/DashboardPage.tsx` | 440 | Main dashboard page |
-| `apps/web/src/components/LogsPage.tsx` | 437 | Log viewer with filtering |
+## Known Bugs
 
-### Hardcoded Model Definitions
-- **File:** `apps/backend/src/server.ts`, lines 973-978
-- **Issue:** Model groupings (gemini-3-pro, gemini-3-flash, gemini-3-image, claude) are hardcoded as string patterns inside the `/api/accounts/quota-windows` route. When new models are released, this must be manually updated.
-- **Fix approach:** Move model definitions to `config/quotaStrategy.json` (already exists for `quotaStrategyManager`) and reuse that configuration.
+**Language Server detection on Windows:**
+- Symptoms: LS connection and credits polling may never succeed on `win32`; logs may show platform warnings or failed `ps`/`grep`/`lsof` execution.
+- Trigger: Run backend on Windows with Antigravity/VS Code extension; observe `apps/backend/src/services/languageServer/detect.ts` and `getListeningPorts` (Unix-style `lsof`/`ss` pipeline with `2>/dev/null`).
+- Workaround: Use Linux or macOS for full LS integration, or disable LS-related features via configuration expectations.
+- Root cause: `apps/backend/src/services/languageServer/platforms/index.ts` maps `win32` to `LinuxStrategy` with a console warning; `isPlatformSupported()` returns `false` for `win32`. `getListeningPorts` in `detect.ts` assumes Unix shell semantics.
+- Blocked by: A dedicated `WindowsStrategy` (WMI / PowerShell / netstat) and tests on Windows.
 
-### Repeated Error Handling Pattern
-- **Files:** `apps/backend/src/server.ts` — every route handler
-- **Pattern:** Every route repeats the same `try/catch` with `res.status(500).json({ success: false, error: error.message })`. This is verbose and error-prone.
-- **Fix approach:** Use Express error-handling middleware (already exists at line 2056 but routes still use inline try/catch blocks).
+**Advertised `/v1` proxy URLs vs routing:**
+- Symptoms: HTTP clients pointed at `/v1/messages` or `/v1/chat/completions` may receive HTML (SPA) or non-JSON responses.
+- Trigger: `POST` to `http://localhost:3456/v1/messages` without a matching registered route (see Tech Debt above).
+- Workaround: Not applicable until routes are registered.
+- Root cause: Missing Express routes for the proxy (see `apps/backend/src/routes/proxy.ts`).
 
-### Inline HTML in OAuth Callback
-- **File:** `apps/backend/src/server.ts`, lines 551, 556
-- **Issue:** Success and error HTML pages are constructed as inline template strings with manual character escaping. This is fragile and hard to maintain.
-- **Fix approach:** Extract to separate HTML template files or a minimal template helper.
+## Security Considerations
 
-### `any` Type Usage in Callback Handlers
-- **File:** `apps/backend/src/server.ts`, line 137 (`acc: any`), line 223 (`error: any`), line 248 (`data.data;`), line 251 (`l: any`), line 257 (`l: any`), line 576 (`err: any`), line 584 (`error: any`), and many more route handlers
-- **Issue:** While the project enforces strict mode, route handlers consistently use `error: any` in catch blocks. This defeats type safety for error handling.
-- **Fix approach:** Use `error: unknown` with type guards (already done correctly at line 2050 for `/api/analytics/prediction`).
+**Optional dashboard authentication and bind address:**
+- Risk: With `DASHBOARD_SECRET` unset, `requireAuth` in `apps/backend/src/utils/authMiddleware.ts` allows all `/api` requests; `getBindHost()` binds `127.0.0.1` only, limiting exposure to local machine. With `DASHBOARD_SECRET` set, bind switches to `0.0.0.0` and Bearer auth is enforced for `/api` routes.
+- Current mitigation: Documented behavior; timing-safe compare for tokens; WebSocket `verifyClient` uses `validateWebSocketAuth` in `apps/backend/src/services/websocket.ts` when auth is enabled.
+- Recommendations: Treat production deployments as requiring `DASHBOARD_SECRET` and TLS termination if exposed beyond localhost; document threat model for Electron packaged apps loading `.env` from `process.resourcesPath` (`electron/main.js`, `package.json` `extraResources`).
 
-### `WSMessage.data` Uses `any`
-- **Files:** `apps/backend/src/types/index.ts` line 82, `apps/web/src/types/index.ts` line 105
-- **Issue:** `WSMessage.data` is typed as `any`, losing all type safety for WebSocket payloads.
-- **Fix approach:** Use discriminated union types based on `WSMessage.type`.
+**Local HTTPS to Language Server (`rejectUnauthorized: false`):**
+- Risk: If `hostname` were ever not loopback, TLS verification would be disabled.
+- Current mitigation: Code paths target `127.0.0.1`; comments in `apps/backend/src/services/languageServer/httpClient.ts` and `detect.ts` state localhost-only intent.
+- Recommendations: Keep host pinned to loopback; add assertions or runtime checks that `hostname === '127.0.0.1'` / `localhost` before setting `rejectUnauthorized: false`.
 
-## Maintenance Burden
+**Large JSON body limit:**
+- Risk: `express.json({ limit: '50mb' })` in `apps/backend/src/server.ts` allows very large request bodies on authenticated or local routes, increasing memory pressure.
+- Current mitigation: Rate limiter on `/api` (`apiLimiter`); local-only default when auth is off.
+- Recommendations: Lower default for general JSON routes; reserve large limits only for specific upload routes if needed.
 
-### No Testing Framework
-- **Impact:** No test runner, no assertions, no CI test step. The only quality gate is `oxlint`.
-- **Files:** No `*.test.ts` or `*.spec.ts` files exist anywhere.
-- **Risk:** Refactoring the 2224-line server file or any service is high-risk without tests.
+**Proxy management endpoints expose API key when auth is off:**
+- Risk: `managementRouter` in `apps/backend/src/routes/proxy.ts` uses `requireAuth`; when auth is disabled, `requireAuth` passes through, so `GET /api/proxy/api-key` returns the key to any local caller.
+- Current mitigation: Default bind `127.0.0.1` without `DASHBOARD_SECRET` limits access to localhost.
+- Recommendations: When exposing the server on the network, always set `DASHBOARD_SECRET` and review CORS (`corsOrigins` in `server.ts`).
 
-### Dependency Version Drift
-- **File:** `apps/backend/package.json` — `typescript: ^5.3.3`
-- **File:** `apps/web/package.json` — `typescript: ^5.3.3`
-- **Issue:** Both apps pin TypeScript at `^5.3.3` (released Nov 2023). Current TypeScript is 5.8+. Missing out on improvements and potential security patches.
-- **File:** `apps/web/package.json` — `react: ^18.2.0`
-- **Issue:** React 18 is stable but React 19 is available. Not urgent but worth monitoring.
-
-### Peer Dependency on `opencode-antigravity-auth`
-- **File:** `apps/backend/package.json`, line 45
-- **Issue:** `opencode-antigravity-auth: ^1.2.0` is a peer dependency. If this package is unavailable or changes API, the auth middleware breaks silently.
-- **Risk:** External dependency outside project control.
-
-### Build Process Complexity
-- **Issue:** Backend builds with `tsc` to `dist/`, frontend builds with Vite to `apps/web/dist/`. The backend then serves the frontend's static files from `../../web/dist`. This creates a fragile build ordering dependency — if the frontend isn't built first, the backend serves stale or missing assets.
-- **Files:** `apps/backend/src/server.ts` line 206 (`express.static(path.join(__dirname, '../../web/dist'))`)
-
-### No CI/CD Pipeline
-- **Issue:** No `.github/workflows/`, no CI configuration. Quality checks depend on local `pnpm run lint` only.
-
-## Security Concerns
-
-### WebSocket Auth via Query Parameter
-- **File:** `apps/backend/src/utils/authMiddleware.ts`, lines 70-86
-- **Issue:** WebSocket authentication passes the token as a URL query parameter (`?token=...`). Query parameters are logged in server access logs, browser history, and proxy logs. This is less secure than using a subprotocol header or upgrade header.
-- **Recommendation:** Use WebSocket subprotocol or custom header for auth token.
-
-### OAuth Callback Server Lifecycle
-- **File:** `apps/backend/src/server.ts`, lines 468-580
-- **Issue:** The OAuth callback server is created/destroyed dynamically on port 51121. If the close timeout fails or the server doesn't shut down cleanly, the port may remain bound, blocking subsequent OAuth flows.
-- **File:** `apps/backend/src/server.ts`, line 576 — callback server error handler attempts to close but swallows errors.
-
-### Refresh Token Storage
-- **Files:** `apps/backend/src/services/accountsFile.ts` line 25, `~/.config/opencode/antigravity-accounts.json`
-- **Issue:** Refresh tokens are stored in a JSON file on the local filesystem. While the export endpoint strips them (line 839), the raw file is readable by any process with user-level access.
-- **Mitigation:** File permissions should be restricted to owner-only (not currently enforced programmatically).
-
-### OAuth Client Secret in Memory
-- **File:** `apps/backend/src/server.ts`, lines 492-501
-- **Issue:** `GOOGLE_CLIENT_SECRET` is read from environment and used directly in the token exchange. It's held in memory for the lifetime of the process.
-- **Mitigation:** Acceptable for a local dashboard, but worth noting for any future multi-tenant deployment.
-
-### CSV Export Without Proper Escaping Edge Cases
-- **File:** `apps/backend/src/server.ts`, lines 1534-1540
-- **Issue:** The `escapeCSVCell` function wraps all values in double quotes, which is correct, but the CSV export at line 1494-1518 doesn't handle the case where `account_email` or `error_message` could contain injection payloads. Current escaping is adequate but not using a battle-tested CSV library.
+**Accounts file and refresh tokens on disk:**
+- Risk: `apps/backend/src/services/accountsFile.ts` reads `antigravity-accounts.json` under `getAppHomeDir()`; compromise of that file exposes OAuth refresh material.
+- Current mitigation: Export path strips secrets (`/api/accounts/export` in `server.ts`); file permissions are OS-dependent.
+- Recommendations: Document OS file permissions; avoid logging full paths in shared logs in untrusted environments.
 
 ## Performance Bottlenecks
 
-### Full Table Scan for Pagination Count
-- **File:** `apps/backend/src/server.ts`, line 1284
-- **Issue:** To get total log count for pagination, the code fetches up to 10,000 rows and counts them in memory (`monitor.getCombinedLogs({ ...countFilters, limit: 10000, offset: 0 })`) instead of using `SELECT COUNT(*)`. This wastes memory and CPU.
-- **Fix approach:** Add a `getCombinedLogsCount()` method that uses `COUNT(*)`.
+**Quota polling and Google API calls:**
+- Problem: `getQuotaService(120000)` in `server.ts` triggers periodic work across accounts; `apps/backend/src/services/quotaService.ts` coordinates fetches.
+- Measurement: Not detected (no APM traces in repo).
+- Cause: Network round-trips to Google Cloud Code API per polling cycle and account count.
+- Improvement path: Batch requests where the API allows; backoff on errors; surface metrics in logs or a debug endpoint.
 
-### N+1 Query Pattern in Enriched Accounts
-- **File:** `apps/backend/src/server.ts`, lines 788-828
-- **Issue:** For each account, the code does `.find()` on quotas array and stats array. With many accounts, this becomes O(n²). Not critical at current scale but degrades with account count.
+**SQLite write path for API logging:**
+- Problem: `apps/backend/src/monitor.ts` persists calls and events via `better-sqlite3`; heavy proxy traffic increases write volume.
+- Measurement: Not detected.
+- Cause: Single-process SQLite suitable for moderate throughput; synchronous writes under load.
+- Improvement path: Batch inserts, WAL tuning, or archival of `api_calls` for long-running deployments.
 
-### In-Memory Quota Cache with No Eviction
-- **File:** `apps/backend/src/services/quotaService.ts`
-- **Issue:** Quota cache grows unbounded. Token cache also has no size limit. Over time with many accounts, this could consume significant memory.
+**Language Server detection subprocesses:**
+- Problem: `detect.ts` runs `exec` with `ps`/`grep` and per-PID `lsof`/`ss` (see `getListeningPorts`), repeated on retries.
+- Measurement: Not detected.
+- Cause: Process scanning and port discovery are inherently spiky.
+- Improvement path: Cache successful detection; increase backoff (service already uses backoff in `languageServerService`).
 
-### SQLite Write Contention
-- **File:** `apps/backend/src/monitor.ts`
-- **Issue:** `better-sqlite3` is synchronous. Every API call logged blocks the event loop briefly. Under high proxy load (many concurrent requests), this could cause request queuing.
-- **Mitigation:** Consider batching writes or using WAL mode with write-ahead journaling.
+## Fragile Areas
 
-### Recharts Rendering for Large Datasets
-- **File:** `apps/web/src/components/TimelineVisualization.tsx`
-- **Issue:** Recharts renders all data points in the DOM. With 168+ hours of data (7 days of hourly stats), this creates hundreds of SVG elements and can cause UI lag.
+**Express middleware order vs SPA fallback:**
+- Why fragile: `app.get('*', ...)` in `apps/backend/src/server.ts` serves `index.html` for unknown GET routes; any new API route must be registered before this handler.
+- Common failures: New `GET` API path accidentally returns the SPA; API clients receive HTML.
+- Safe modification: Register API routes above the catch-all; add a smoke test list of API paths.
+- Test coverage: No automated route tests detected.
 
-## Scalability Limits
+**Language Server stack (`detect.ts` + `platforms/linux.ts` + `httpClient.ts`):**
+- Why fragile: Tightly coupled to process command-line shapes, dynamic ports, and CSRF tokens from the Antigravity extension; OS-specific commands.
+- Common failures: Extension changes argument names; grep patterns in `linux.ts` miss processes; TLS/port mismatch.
+- Safe modification: Extend `PlatformStrategy` with new parsers rather than patching strings inline; prefer structured logs over silent catches when diagnosing.
+- Test coverage: No unit tests in `apps/backend` for LS detection.
 
-### File-Based Account Storage
-- **File:** `apps/backend/src/services/accountsFile.ts`, line 25
-- **Issue:** Accounts are stored in a single JSON file (`antigravity-accounts.json`). The entire file is read, parsed, and rewritten on every change. This doesn't scale beyond dozens of accounts and has no concurrency protection beyond the file watcher.
-- **Limit:** Practical limit is ~50-100 accounts before file I/O becomes noticeable.
+**`proxyManagementRouter` nested under `requireAuth`:**
+- Why fragile: `managementRouter.use(requireAuth)` in `routes/proxy.ts` duplicates the global `/api` auth applied later in `server.ts` when `DASHBOARD_SECRET` is set—behavior is correct but non-obvious.
+- Common failures: Developers may assume only one auth layer or forget management routes when changing auth.
+- Safe modification: Document in `routes/proxy.ts` header; consider consolidating auth middleware registration.
+- Test coverage: None detected.
 
-### Single-Process Architecture
-- **Issue:** The entire application runs as a single Node.js process. No horizontal scaling is possible. The SQLite database is single-writer, so even clustering would require significant re-architecture.
-- **Impact:** Acceptable for a personal/local dashboard, but not deployable as a multi-user service.
+## Scaling Limits
 
-### WebSocket Broadcast to All Clients
-- **File:** `apps/backend/src/services/websocket.ts` (221 lines)
-- **Issue:** `broadcastNow()` sends to all connected clients without filtering. If different users need different data views, this leaks information.
-- **Current state:** Acceptable for single-user local dashboard.
+**SQLite database (`usage.db`):**
+- Current capacity: Single-file DB under `~/.config/opencode/antigravity-dashboard/usage.db` (see `apps/backend/src/monitor.ts`); single writer.
+- Limit: Write contention and file size growth under very high API call logging volume.
+- Symptoms at limit: Slow inserts, lock errors, large disk use.
+- Scaling path: Periodic pruning (`cleanup` routes exist in `server.ts`), migration to client/server DB for multi-instance deployments.
 
-### No Rate Limiting on OAuth Endpoints
-- **File:** `apps/backend/src/server.ts`, lines 437-587
-- **Issue:** The `/api/auth/google/url` endpoint and OAuth callback server have no rate limiting. While the global API limiter (line 67-73, 100 req/min) applies to `/api/*`, the OAuth callback server on port 51121 is a separate Express server with no rate limiting.
+**WebSocket fan-out:**
+- Current capacity: In-memory client map in `apps/backend/src/services/websocket.ts`; `configManager` defaults mention `maxConnections: 100` but that value is not wired to `WebSocketManager`.
+- Limit: Memory and event-loop cost with many connected dashboards.
+- Symptoms at limit: High memory, delayed broadcasts.
+- Scaling path: Wire max connection limits; horizontal scaling would require a shared pub/sub layer (not present).
 
-## Technical Debt
+**Single Node process:**
+- Current capacity: One Express process per deployment.
+- Limit: CPU-bound JSON and proxy work share one core cluster unless clustered.
+- Scaling path: Process manager with multiple workers (state externalized), or split read-only dashboard from write-heavy proxy.
 
-### Model Definitions Duplicated in Multiple Places
-- **Files:** 
-  - `apps/backend/src/server.ts` lines 973-978 (quota-windows route)
-  - `apps/backend/src/config/quotaStrategy.json` (quota strategy config)
-  - `apps/backend/src/services/tierDetection.ts` (tier detection)
-- **Issue:** Model IDs, display names, and family assignments are defined in at least 3 places. Adding a new model requires changes in all locations.
+## Dependencies at Risk
 
-### Commented-Out/Dead Code Potential
-- **File:** `apps/backend/src/server.ts`, lines 1999-2000 (blank lines between route groups suggest incomplete refactoring)
-- **File:** `apps/backend/src/server.ts`, line 1100 — comment says "will be enhanced in Phase 4" suggesting incomplete implementation
+**`better-sqlite3` native binding:**
+- Risk: Native module must rebuild per Node/Electron ABI; `package.json` lists it under `pnpm.onlyBuiltDependencies`.
+- Impact: Install or Electron packaging fails if build tools or ABI mismatch.
+- Migration plan: Pin Node/Electron versions; document rebuild steps for contributors.
 
-### Magic Numbers
-- **File:** `apps/backend/src/server.ts`, line 36 — `MANAGER_URL` defaults to `http://localhost:8080`
-- **File:** `apps/backend/src/server.ts`, line 398 — `OAUTH_CALLBACK_PORT = 51121` (hardcoded port)
-- **File:** `apps/backend/src/server.ts`, line 68 — rate limit window of 60 seconds, max 100 requests
-- **File:** `apps/backend/src/server.ts`, line 75 — JSON body limit of 50mb
-- **File:** `apps/backend/src/monitor.ts`, line 271 — default 30 days for data cleanup
-- **File:** `apps/backend/src/services/fileLogger.ts` — 7 days retention (line 83 in server.ts)
-- **Fix approach:** Extract to a configuration file or constants module.
+**`opencode-antigravity-auth` peer dependency (`apps/backend/package.json`):**
+- Risk: Peer mismatch warnings if versions diverge from the Antigravity plugin ecosystem.
+- Impact: OAuth/token flows may break if plugin API changes.
+- Migration plan: Align peer version with published plugin; test OAuth callback paths in `server.ts`.
 
-### Inconsistent Error Response Formats
-- **Files:** `apps/backend/src/server.ts` — throughout
-- **Issue:** Most endpoints return `{ success: false, error: string }`, but some include additional fields like `message`. The proxy routes may have different error formats. Clients must handle multiple error shapes.
+## Missing Critical Features
 
-### No Input Validation Library
-- **Files:** `apps/backend/src/server.ts` — all POST/DELETE handlers
-- **Issue:** Request body validation is done manually with inline checks (e.g., lines 596-599, 640-643). No schema validation library (Zod, Joi, etc.) is used. This is error-prone and inconsistent.
-- **Example:** `app.delete('/api/accounts/:email')` at line 617 decodes the email but doesn't validate format.
+**Windows-native Language Server discovery:**
+- Problem: No `WindowsStrategy` implementation; `platforms/index.ts` falls back to Linux-oriented commands.
+- Current workaround: None on Windows for reliable LS bridge.
+- Blocks: Parity for Windows-only developers using the dashboard against the extension.
+- Implementation complexity: Medium (new process enumeration + port discovery + tests on Windows).
 
-### Stale Comment References
-- **File:** `apps/backend/src/server.ts`, line 1100 — "will be enhanced in Phase 4" — unclear if this is still relevant or completed.
+**Automated test suite for backend and web:**
+- Problem: No `vitest`/`jest` scripts in workspace `package.json`; no `*.test.ts` files under `apps/` in source tree.
+- Current workaround: Manual and lint-only (`oxlint`) verification.
+- Blocks: Safe refactoring of `server.ts`, proxy, and LS code.
+- Implementation complexity: Medium (add runner, CI job, first critical-path tests).
 
-## Recommendations
+## Test Coverage Gaps
 
-### High Priority
-1. **Extract routes from `server.ts`** into separate router modules (`routes/accounts.ts`, `routes/analytics.ts`, `routes/oauth.ts`, `routes/logs.ts`, `routes/languageServer.ts`). This is the single biggest improvement for maintainability.
-2. **Create a shared types package** (`packages/types/`) to eliminate type duplication between frontend and backend.
-3. **Add a test framework** (Vitest) with at least unit tests for core services (`accountsFile.ts`, `quotaService.ts`, `tierDetection.ts`).
+**API proxy (`services/apiProxy/`):**
+- What's not tested: `handleClaudeRequest`, streaming, `validateApiKey`, and converter edge cases.
+- Risk: Regressions in Claude/OpenAI compatibility and token accounting.
+- Priority: High (once `/v1` routes are wired).
+- Difficulty to test: Requires mocking `AntigravityClient` and streaming responses.
 
-### Medium Priority
-4. **Add input validation** with Zod for all POST/DELETE endpoints.
-5. **Fix pagination count query** to use `SELECT COUNT(*)` instead of fetching 10,000 rows.
-6. **Consolidate model definitions** into a single source of truth (extend `config/quotaStrategy.json`).
-7. **Add CI pipeline** with lint, typecheck, and test steps.
+**Language Server detection (`services/languageServer/detect.ts`, `platforms/linux.ts`):**
+- What's not tested: Parsing of `ps` output, port extraction, and failure modes.
+- Risk: Silent failure to connect after extension updates.
+- Priority: Medium.
+- Difficulty to test: Fixture strings for stdout and dependency injection for `exec`.
 
-### Lower Priority
-8. **Upgrade TypeScript** from 5.3.3 to latest 5.x.
-9. **Add WebSocket auth via header** instead of query parameter.
-10. **Extract OAuth HTML templates** to separate files.
-11. **Add file permission enforcement** for the accounts JSON file (chmod 600).
-12. **Consider SQLite WAL mode** for better concurrent write handling.
+**End-to-end dashboard flows:**
+- What's not tested: OAuth callback, WebSocket auth with `token` query param, account file watcher behavior.
+- Risk: Broken flows after dependency or Express changes.
+- Priority: Medium.
+- Difficulty to test: Requires headless browser or scripted HTTP/WebSocket harness.
 
 ---
 
 *Concerns audit: 2026-04-05*
+*Update as issues are fixed or new ones discovered*
