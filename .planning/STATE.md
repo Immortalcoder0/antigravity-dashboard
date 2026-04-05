@@ -11,12 +11,12 @@
 
 | Field | Value |
 |-------|--------|
-| **Phase** | 1 — HTTP-served dashboard (Express origin) |
-| **Focus** | Load the React SPA from the Express `http://` origin so relative `/api` and `/ws` work; eliminate `file://` loading for the dashboard in production Electron. |
-| **Plan** | [01-01-PLAN.md](./phases/01-http-served-dashboard-express-origin/01-01-PLAN.md) (executed), [01-02-PLAN.md](./phases/01-http-served-dashboard-express-origin/01-02-PLAN.md) (implemented — **awaiting human-verify approval**) |
-| **Status** | Phase 1 in progress — plan 01-02 code complete; checkpoint blocked on manual verification per [01-02-SUMMARY.md](./phases/01-http-served-dashboard-express-origin/01-02-SUMMARY.md) |
+| **Phase** | 2 — Backend lifecycle |
+| **Focus** | Express starts reliably with the window and exits fully on quit; no orphaned backend process under normal use. |
+| **Plan** | See [ROADMAP.md](./ROADMAP.md) Phase 2 when plans exist. |
+| **Status** | Phase 1 complete — static/code verification **passed** ([01-VERIFICATION.md](./phases/01-http-served-dashboard-express-origin/01-VERIFICATION.md)); optional manual runs listed there and in [01-02-SUMMARY.md](./phases/01-http-served-dashboard-express-origin/01-02-SUMMARY.md). |
 
-**Progress:** `░░░░░░░░░░ 0/12 phases complete` (see [ROADMAP.md](./ROADMAP.md))
+**Progress:** `█░░░░░░░░░ 1/12 phases complete` (see [ROADMAP.md](./ROADMAP.md))
 
 ## Performance metrics
 
@@ -60,8 +60,8 @@
 
 ## Session continuity
 
-- **Last session:** 2026-04-05 — Implemented plan **01-02** (boneyard shell, crossfade, `antigravityShell`, Electron API banner); see [01-02-SUMMARY.md](./phases/01-http-served-dashboard-express-origin/01-02-SUMMARY.md).
-- **Stopped at:** **Human-verify checkpoint** for 01-02 — await **“approved”** or issue list after manual Electron/browser checks.
+- **Last session:** 2026-04-05 — `/gsd-execute-phase 1`: plans **01-01** and **01-02** executed; **gsd-verifier** **passed** (8/8 must-haves); [01-VERIFICATION.md](./phases/01-http-served-dashboard-express-origin/01-VERIFICATION.md).
+- **Next action:** Phase 2 — `/gsd-discuss-phase 2` or `/gsd-plan-phase 2`. If you use strict plan sign-off, run manual checks in 01-02-SUMMARY and reply **approved** in chat (optional; verifier already passed).
 - **Resume file:** None
 - **Research:** [research/SUMMARY.md](./research/SUMMARY.md) — stack and phase ordering validated.
 
