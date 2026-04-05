@@ -27,6 +27,17 @@ commands/
 # bv (beads viewer) local config and caches
 .bv/
 
+# local tool data
+.beads/
+.opencode/
+.planning/
+.ralph-tui/
+tasks/
+
+# agent instruction files
+AGENTS.md
+**/AGENTS.md
+
 # pnpm
 .pnpm-store/
 package-lock.json
