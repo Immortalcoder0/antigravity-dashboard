@@ -5,3 +5,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getIsPackaged: () => ipcRenderer.invoke('electron:is-packaged'),
   retryDashboardLoad: () => ipcRenderer.invoke('electron:dashboard-retry'),
 });
+
+contextBridge.exposeInMainWorld('antigravityShell', {
+  isElectron: true,
+  platform: process.platform,
+});

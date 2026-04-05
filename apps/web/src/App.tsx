@@ -6,11 +6,13 @@ import { useQuota } from './hooks/useQuota';
 import { useBurnRate } from './hooks/useBurnRate';
 import { useAuth } from './hooks/useAuth';
 import { AppShell } from './components/AppShell';
+import { ElectronApiBanner } from './components/ElectronApiBanner';
 import { DashboardPage } from './components/DashboardPage';
 import { AccountsPage } from './components/AccountsPage';
 import { LogsPage } from './components/LogsPage';
 import { SettingsPage } from './components/SettingsPage';
 import { AuthPrompt } from './components/AuthPrompt';
+import { useElectronApiBanner } from './hooks/useElectronApiBanner';
 
 const BONEYARD_BUILD =
   typeof window !== 'undefined' &&
@@ -27,14 +29,23 @@ function App() {
   } = useDashboardStore();
 
   const { token, setToken, authRequired, authError, isAuthenticated } = useAuth();
-  const { refresh: refreshQuotas, lastRefresh: quotaLastRefresh } = useQuota(120000);
+  const { refresh: refreshQuotas, lastRefresh: quotaLastRefresh, error: quotaError } = useQuota(120000);
   const { refresh: refreshBurnRates, lastRefresh: burnLastRefresh } = useBurnRate(60000);
 
   const [refreshing, setRefreshing] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [shellFadeIn, setShellFadeIn] = useState(false);
+  const [accountsNetworkError, setAccountsNetworkError] = useState(false);
 
-  useWebSocket({ autoConnect: isAuthenticated, token: token || undefined });
+  const { connect: reconnectWs } = useWebSocket({ autoConnect: isAuthenticated, token: token || undefined });
+
+  const isElectron = window.antigravityShell?.isElectron === true;
+  const electronBanner = useElectronApiBanner({
+    isElectron,
+    initialLoading,
+    quotaError,
+    accountsNetworkError,
+  });
 
   useEffect(() => {
     const theme = preferences.theme;
@@ -61,6 +72,7 @@ function App() {
       const response = await fetch('/api/accounts/local', { headers });
 
       if (response.status === 401) {
+        setAccountsNetworkError(false);
         setInitialLoading(false);
         return;
       }
@@ -69,8 +81,10 @@ function App() {
       if (data.success && data.data) {
         setLocalAccounts(data.data);
       }
+      setAccountsNetworkError(false);
     } catch (error) {
       console.error('Failed to fetch accounts:', error);
+      setAccountsNetworkError(true);
     } finally {
       setInitialLoading(false);
     }
@@ -80,6 +94,11 @@ function App() {
     setRefreshing(true);
     await Promise.all([fetchAccounts(), refreshQuotas(), refreshBurnRates()]);
     setRefreshing(false);
+  };
+
+  const handleElectronConnectivityRetry = async () => {
+    await handleRefresh();
+    reconnectWs();
   };
 
   const toggleTheme = () => {
@@ -129,34 +148,41 @@ function App() {
   );
 
   return (
-    <Skeleton
-      name="antigravity-dashboard-shell"
-      loading={initialLoading}
-      className="min-h-screen w-full"
-      animate="pulse"
-      fixture={shellFixture}
-      fallback={shellFixture}
-    >
-      <div
-        className={`min-h-screen w-full transition-opacity duration-300 ease-out ${
-          shellFadeIn ? 'opacity-100' : 'opacity-0'
-        }`}
+    <>
+      <ElectronApiBanner
+        visible={electronBanner.visible}
+        dismiss={electronBanner.dismiss}
+        onRetryConnection={handleElectronConnectivityRetry}
+      />
+      <Skeleton
+        name="antigravity-dashboard-shell"
+        loading={initialLoading}
+        className="min-h-screen w-full"
+        animate="pulse"
+        fixture={shellFixture}
+        fallback={shellFixture}
       >
-        <AppShell
-          currentPage={currentPage}
-          onPageChange={setCurrentPage}
-          wsConnected={wsConnected}
-          quotaLastRefresh={quotaLastRefresh}
-          burnLastRefresh={burnLastRefresh}
-          preferences={preferences}
-          onToggleTheme={toggleTheme}
-          onRefresh={handleRefresh}
-          refreshing={refreshing}
+        <div
+          className={`min-h-screen w-full transition-opacity duration-300 ease-out ${
+            shellFadeIn ? 'opacity-100' : 'opacity-0'
+          }`}
         >
-          {mainPages}
-        </AppShell>
-      </div>
-    </Skeleton>
+          <AppShell
+            currentPage={currentPage}
+            onPageChange={setCurrentPage}
+            wsConnected={wsConnected}
+            quotaLastRefresh={quotaLastRefresh}
+            burnLastRefresh={burnLastRefresh}
+            preferences={preferences}
+            onToggleTheme={toggleTheme}
+            onRefresh={handleRefresh}
+            refreshing={refreshing}
+          >
+            {mainPages}
+          </AppShell>
+        </div>
+      </Skeleton>
+    </>
   );
 }
 
