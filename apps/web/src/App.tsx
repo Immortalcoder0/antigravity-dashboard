@@ -14,6 +14,9 @@ import { SettingsPage } from './components/SettingsPage';
 import { AuthPrompt } from './components/AuthPrompt';
 import { useElectronApiBanner } from './hooks/useElectronApiBanner';
 
+/** Minimum time the boneyard shell skeleton stays visible before the real app is shown. */
+const MIN_SHELL_SKELETON_MS = 3000;
+
 const BONEYARD_BUILD =
   typeof window !== 'undefined' &&
   (window as unknown as { __BONEYARD_BUILD?: boolean }).__BONEYARD_BUILD === true;
@@ -59,11 +62,13 @@ function App() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      void fetchAccounts();
+      void fetchAccounts({ forInitialShell: true });
     }
   }, [isAuthenticated, token]);
 
-  const fetchAccounts = async () => {
+  const fetchAccounts = async (options?: { forInitialShell?: boolean }) => {
+    const forInitialShell = options?.forInitialShell === true;
+    const started = Date.now();
     try {
       const headers: HeadersInit = {};
       if (token) {
@@ -73,7 +78,6 @@ function App() {
 
       if (response.status === 401) {
         setAccountsNetworkError(false);
-        setInitialLoading(false);
         return;
       }
 
@@ -86,7 +90,16 @@ function App() {
       console.error('Failed to fetch accounts:', error);
       setAccountsNetworkError(true);
     } finally {
-      setInitialLoading(false);
+      if (forInitialShell) {
+        const elapsed = Date.now() - started;
+        const remaining = Math.max(0, MIN_SHELL_SKELETON_MS - elapsed);
+        if (remaining > 0) {
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, remaining);
+          });
+        }
+        setInitialLoading(false);
+      }
     }
   };
 
