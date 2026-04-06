@@ -21,7 +21,54 @@ const BONEYARD_BUILD =
   typeof window !== 'undefined' &&
   (window as unknown as { __BONEYARD_BUILD?: boolean }).__BONEYARD_BUILD === true;
 
-function App() {
+type ShellGateState = 'checking' | true | false;
+
+/** Packaged Electron only: boneyard shell until main reports backend HTTP ready (no API hooks yet). */
+function PackagedShellGate() {
+  const { preferences } = useDashboardStore();
+
+  useEffect(() => {
+    const theme = preferences.theme;
+    if (theme === 'system') {
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+    } else {
+      document.documentElement.setAttribute('data-theme', theme);
+    }
+  }, [preferences.theme]);
+
+  const shellFixture = (
+    <AppShell
+      currentPage="dashboard"
+      onPageChange={() => {}}
+      wsConnected
+      quotaLastRefresh={Date.now()}
+      burnLastRefresh={Date.now()}
+      preferences={preferences}
+      onToggleTheme={() => {}}
+      onRefresh={() => {}}
+      refreshing={false}
+      contentPlaceholder
+    >
+      {null}
+    </AppShell>
+  );
+
+  return (
+    <Skeleton
+      name="antigravity-dashboard-shell"
+      loading
+      className="min-h-screen w-full"
+      animate="pulse"
+      fixture={shellFixture}
+      fallback={shellFixture}
+    >
+      {null}
+    </Skeleton>
+  );
+}
+
+function DashboardApp() {
   const {
     wsConnected,
     setLocalAccounts,
@@ -31,7 +78,7 @@ function App() {
     updatePreferences,
   } = useDashboardStore();
 
-  const { token, setToken, authRequired, authError, isAuthenticated } = useAuth();
+  const { token, isAuthenticated } = useAuth();
   const { refresh: refreshQuotas, lastRefresh: quotaLastRefresh, error: quotaError } = useQuota(120000);
   const { refresh: refreshBurnRates, lastRefresh: burnLastRefresh } = useBurnRate(60000);
 
@@ -130,10 +177,6 @@ function App() {
     return () => cancelAnimationFrame(id);
   }, [initialLoading]);
 
-  if (!BONEYARD_BUILD && authRequired && !token) {
-    return <AuthPrompt onLogin={setToken} error={authError} />;
-  }
-
   const shellFixture = (
     <AppShell
       currentPage="dashboard"
@@ -199,4 +242,47 @@ function App() {
   );
 }
 
-export default App;
+export default function App() {
+  const { token, setToken, authRequired, authError } = useAuth();
+  const [shellGate, setShellGate] = useState<ShellGateState>(() =>
+    typeof window !== 'undefined' && window.electronAPI ? 'checking' : true,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      const api = window.electronAPI;
+      if (!api?.getIsPackaged || !api?.getShellState) {
+        if (!cancelled) {
+          setShellGate(true);
+        }
+        return;
+      }
+      const packaged = await api.getIsPackaged();
+      if (!packaged) {
+        if (!cancelled) {
+          setShellGate(true);
+        }
+        return;
+      }
+      const state = await api.getShellState();
+      if (!cancelled) {
+        setShellGate(state.backendHttpReady);
+      }
+    }
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!BONEYARD_BUILD && authRequired && !token) {
+    return <AuthPrompt onLogin={setToken} error={authError} />;
+  }
+
+  if (shellGate === 'checking' || shellGate === false) {
+    return <PackagedShellGate />;
+  }
+
+  return <DashboardApp />;
+}

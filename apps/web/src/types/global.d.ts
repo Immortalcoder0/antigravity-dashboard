@@ -1,5 +1,11 @@
 export {};
 
+export interface ElectronShellState {
+  backendHttpReady: boolean;
+  port: number;
+  origin: string;
+}
+
 declare global {
   interface Window {
     antigravityShell?: {
@@ -10,6 +16,8 @@ declare global {
       platform: string;
       getIsPackaged: () => Promise<boolean>;
       retryDashboardLoad: () => Promise<void>;
+      relaunchApp: () => Promise<void>;
+      getShellState: () => Promise<ElectronShellState>;
     };
   }
 }

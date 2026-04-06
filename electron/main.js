@@ -1,6 +1,7 @@
-const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
+const { once } = require('node:events');
 const Store = require('electron-store');
 
 const store = new Store({
@@ -10,8 +11,16 @@ const store = new Store({
   },
 });
 
+/** Grace period before SIGKILL when stopping the backend child (ms). */
+const SHUTDOWN_GRACE_MS = 5000;
+
 let mainWindow;
 let backendProcess;
+/** Set when `/api/stats` responds in packaged mode, or false on failure paths. */
+let backendHttpReadyFlag = false;
+let shuttingDown = false;
+/** Recent stderr from backend for bind-error detection (tail). */
+let stderrBuffer = '';
 
 function getDashboardPort() {
   const parsed = Number.parseInt(process.env.DASHBOARD_PORT || '3456', 10);
@@ -26,18 +35,37 @@ function isDev() {
   return process.env.NODE_ENV === 'development' || !app.isPackaged;
 }
 
+function stderrSuggestsBindError() {
+  return /EADDRINUSE|address already in use/i.test(stderrBuffer);
+}
+
 function registerIpcHandlers() {
   ipcMain.handle('electron:is-packaged', () => app.isPackaged);
+  ipcMain.handle('electron:get-shell-state', () => ({
+    backendHttpReady: backendHttpReadyFlag,
+    port: getDashboardPort(),
+    origin: getDashboardOrigin(),
+  }));
+  ipcMain.handle('electron:relaunch-app', () => {
+    app.relaunch({ args: process.argv.slice(1) });
+    app.exit(0);
+  });
   ipcMain.handle('electron:dashboard-retry', async () => {
     if (!mainWindow || isDev()) {
       return { ok: true };
     }
-    await loadDashboardProduction();
+    app.relaunch({ args: process.argv.slice(1) });
+    app.exit(0);
     return { ok: true };
   });
 }
 
 function startBackend() {
+  if (backendProcess && backendProcess.exitCode === null) {
+    console.warn('[Electron] startBackend: child already running, skipping second spawn');
+    return;
+  }
+
   const backendPath = isDev()
     ? path.join(__dirname, '..', 'apps', 'backend', 'dist', 'server.js')
     : path.join(process.resourcesPath, 'backend', 'server.js');
@@ -46,14 +74,19 @@ function startBackend() {
     ? path.join(__dirname, '..', '.env')
     : path.join(process.resourcesPath, '.env');
 
+  const port = getDashboardPort();
+
   console.log('[Electron] Backend path:', backendPath);
   console.log('[Electron] Env path:', envPath);
+
+  stderrBuffer = '';
 
   backendProcess = spawn(process.execPath, [backendPath], {
     env: {
       ...process.env,
       NODE_ENV: 'production',
       DOTENV_CONFIG_PATH: envPath,
+      DASHBOARD_PORT: String(port),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -63,7 +96,9 @@ function startBackend() {
   });
 
   backendProcess.stderr.on('data', (data) => {
-    console.error(`[Backend Error] ${data.toString().trim()}`);
+    const s = data.toString();
+    stderrBuffer = (stderrBuffer + s).slice(-8000);
+    console.error(`[Backend Error] ${s.trim()}`);
   });
 
   backendProcess.on('error', (err) => {
@@ -75,28 +110,120 @@ function startBackend() {
   });
 }
 
-async function waitForDashboardReady(options = {}) {
+/**
+ * @param {import('child_process').ChildProcess | null} backendProc
+ * @param {object} [options]
+ */
+async function waitForDashboardReady(backendProc, options = {}) {
   const port = getDashboardPort();
   const url = `http://127.0.0.1:${port}/api/stats`;
-  const maxMs = options.maxMs ?? 90000;
+  const maxMs = options.maxMs ?? 180000;
   const intervalMs = options.intervalMs ?? 500;
   const start = Date.now();
 
-  while (Date.now() - start < maxMs) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (res.status > 0) {
-        return { ok: true };
+  return await new Promise((resolve) => {
+    let done = false;
+    /** @param {unknown} payload */
+    const finish = (payload) => {
+      if (done) return;
+      done = true;
+      if (backendProc && onEarlyExit) {
+        backendProc.removeListener('exit', onEarlyExit);
       }
-    } catch {
-      /* port closed or network error — keep polling */
+      resolve(payload);
+    };
+
+    /** @param {number | null} code */
+    function onEarlyExit(code, signal) {
+      finish({ ok: false, reason: 'child_exited_early', code, signal });
     }
-    await new Promise((r) => setTimeout(r, intervalMs));
+
+    if (backendProc) {
+      backendProc.once('exit', onEarlyExit);
+    }
+
+    const tick = async () => {
+      while (!done && Date.now() - start < maxMs) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 8000);
+          const res = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeout);
+          if (res.status > 0) {
+            finish({ ok: true });
+            return;
+          }
+        } catch {
+          /* port closed or network error — keep polling */
+        }
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+      if (!done) {
+        finish({ ok: false, message: 'Timed out waiting for the local dashboard server.' });
+      }
+    };
+
+    void tick();
+  });
+}
+
+async function shutdownBackend() {
+  if (!backendProcess || backendProcess.exitCode !== null) {
+    backendProcess = null;
+    return;
   }
-  return { ok: false, message: 'Timed out waiting for the local dashboard server.' };
+  const child = backendProcess;
+  try {
+    child.kill();
+  } catch {
+    /* ignore */
+  }
+  try {
+    await Promise.race([
+      once(child, 'close'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('grace')), SHUTDOWN_GRACE_MS)),
+    ]);
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* ignore */
+    }
+    try {
+      await once(child, 'close');
+    } catch {
+      /* ignore */
+    }
+  }
+  if (backendProcess === child) {
+    backendProcess = null;
+  }
+}
+
+/**
+ * @param {object} readyResult
+ */
+async function showFatalBindDialog(readyResult) {
+  const detail =
+    readyResult.reason === 'child_exited_early'
+      ? `The backend exited before the dashboard was ready (code ${readyResult.code ?? 'unknown'}).\n\n${stderrBuffer.slice(-1200)}`
+      : `${readyResult.message || 'The server did not become ready.'}\n\n${stderrBuffer.slice(-1200)}`;
+
+  const { response } = await dialog.showMessageBox({
+    type: 'error',
+    title: 'Dashboard server failed',
+    message: 'Could not bind the local dashboard port (or the server exited immediately).',
+    detail,
+    buttons: ['Retry', 'Quit'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response === 0) {
+    app.relaunch({ args: process.argv.slice(1) });
+    app.exit(0);
+  } else {
+    app.quit();
+  }
 }
 
 function escapeHtml(s) {
@@ -151,8 +278,10 @@ function loadDashboardErrorPage(message) {
   </div>
   <script>
     document.getElementById('retry').addEventListener('click', function () {
-      if (window.electronAPI && window.electronAPI.retryDashboardLoad) {
-        window.electronAPI.retryDashboardLoad();
+      if (window.electronAPI && window.electronAPI.relaunchApp) {
+        void window.electronAPI.relaunchApp();
+      } else if (window.electronAPI && window.electronAPI.retryDashboardLoad) {
+        void window.electronAPI.retryDashboardLoad();
       }
     });
   </script>
@@ -162,21 +291,27 @@ function loadDashboardErrorPage(message) {
   mainWindow.loadURL(dataUrl);
 }
 
-async function loadDashboardProduction() {
-  const result = await waitForDashboardReady();
+/**
+ * @param {object} readyResult
+ */
+async function loadPackagedDashboardContent(readyResult) {
   if (!mainWindow) {
     return;
   }
-  if (!result.ok) {
-    loadDashboardErrorPage(result.message || 'Unknown error');
+  if (!readyResult.ok) {
+    const msg =
+      readyResult.reason === 'child_exited_early'
+        ? `The backend exited before becoming ready (code ${readyResult.code ?? 'unknown'}). ${stderrBuffer ? `\n\n${stderrBuffer.slice(-800)}` : ''}`
+        : readyResult.message || 'Unknown error';
+    loadDashboardErrorPage(msg);
     return;
   }
   const origin = getDashboardOrigin();
   try {
     await mainWindow.loadURL(`${origin}/`);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    loadDashboardErrorPage(msg);
+    const errMsg = e instanceof Error ? e.message : String(e);
+    loadDashboardErrorPage(errMsg);
   }
 }
 
@@ -316,7 +451,26 @@ function buildApplicationMenu() {
   return template;
 }
 
-function createWindow() {
+/**
+ * @param {object} [options]
+ * @param {object} [options.readyResult] — packaged boot result; omit in dev.
+ */
+/**
+ * Start backend, wait for HTTP readiness, then open the main window (packaged only).
+ */
+async function bootPackagedShell() {
+  startBackend();
+  const readyResult = await waitForDashboardReady(backendProcess);
+  backendHttpReadyFlag = readyResult.ok === true;
+  if (!readyResult.ok && stderrSuggestsBindError()) {
+    await showFatalBindDialog(readyResult);
+    return;
+  }
+  createWindow({ readyResult });
+}
+
+function createWindow(options = {}) {
+  const { readyResult } = options;
   const saved = store.get('bounds');
   /** @type {Electron.BrowserWindowConstructorOptions} */
   const winOpts = {
@@ -324,6 +478,7 @@ function createWindow() {
     minHeight: 700,
     title: 'Antigravity Dashboard — Local',
     backgroundColor: '#0f172a',
+    show: isDev(),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -368,34 +523,50 @@ function createWindow() {
   if (isDev()) {
     mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools();
-  } else {
-    loadDashboardProduction();
+    mainWindow.show();
+  } else if (readyResult) {
+    mainWindow.once('ready-to-show', () => {
+      if (mainWindow) {
+        mainWindow.show();
+      }
+    });
+    void loadPackagedDashboardContent(readyResult);
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerIpcHandlers();
-  startBackend();
-  createWindow();
+
+  if (isDev()) {
+    startBackend();
+    createWindow();
+  } else {
+    await bootPackagedShell();
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      if (isDev()) {
+        createWindow();
+      } else {
+        void bootPackagedShell();
+      }
     }
   });
 });
 
 app.on('window-all-closed', () => {
-  if (backendProcess) {
-    backendProcess.kill();
-  }
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  app.quit();
 });
 
-app.on('before-quit', () => {
-  if (backendProcess) {
-    backendProcess.kill();
+app.on('before-quit', (event) => {
+  if (shuttingDown) {
+    return;
   }
+  shuttingDown = true;
+  event.preventDefault();
+  void (async () => {
+    await shutdownBackend();
+    app.exit(0);
+  })();
 });

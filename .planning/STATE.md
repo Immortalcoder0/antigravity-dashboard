@@ -11,18 +11,18 @@
 
 | Field | Value |
 |-------|--------|
-| **Phase** | 2 — Backend lifecycle |
-| **Focus** | Express starts reliably with the window and exits fully on quit; no orphaned backend process under normal use. |
-| **Plan** | See [ROADMAP.md](./ROADMAP.md) Phase 2 when plans exist. |
-| **Status** | Phase 1 complete — static/code verification **passed** ([01-VERIFICATION.md](./phases/01-http-served-dashboard-express-origin/01-VERIFICATION.md)); optional manual runs listed there and in [01-02-SUMMARY.md](./phases/01-http-served-dashboard-express-origin/01-02-SUMMARY.md). |
+| **Phase** | 3 — Live WebSocket updates |
+| **Focus** | `/ws` parity in packaged app, same-origin to dashboard server. |
+| **Plan** | [ROADMAP.md](./ROADMAP.md) Phase 3. |
+| **Status** | Phase 2 complete — verification **passed** (structural + documented human checks): [02-VERIFICATION.md](./phases/02-backend-lifecycle/02-VERIFICATION.md). |
 
-**Progress:** `█░░░░░░░░░ 1/12 phases complete` (see [ROADMAP.md](./ROADMAP.md))
+**Progress:** `██░░░░░░░░ 2/12 phases complete` (see [ROADMAP.md](./ROADMAP.md))
 
 ## Performance metrics
 
 | Metric | Value |
 |--------|--------|
-| Last roadmap update | 2026-04-05 |
+| Last roadmap update | 2026-04-06 |
 | Depth mode | comprehensive |
 
 ## Accumulated context
@@ -33,26 +33,23 @@
 - Do not change OAuth client IDs or redirect URIs beyond existing registration.
 - Tray / minimize-to-tray is out of scope for v1.
 
-### Decisions (from 01-01 execution)
+### Decisions (from 01-01 / 01-02 execution)
+
+(See prior STATE archive in git history; unchanged in substance.)
+
+### Decisions (from 02 execution)
 
 | Decision | Rationale |
 |----------|-----------|
-| `/api/stats` readiness accepts any HTTP status | `app.use('/api', requireAuth)` returns 401 when auth is enabled; connection success must not depend on Bearer tokens from Electron main. |
-| No DevTools menu entry when packaged | Matches CONTEXT: shortcut-only access in production builds. |
-| Local HTTP + HTTPS allowed in `setWindowOpenHandler` | Supports OAuth provider pages and local callback ports (e.g. 51121) without generic in-app browsing. |
-
-### Decisions (from 01-02 execution)
-
-| Decision | Rationale |
-|----------|-----------|
-| Skip `AuthPrompt` when `window.__BONEYARD_BUILD` | Lets `boneyard-js build` capture the shell fixture without a running authenticated API. |
-| Banner driven by `useQuota` error + accounts fetch throw | Central hooks already model API health; avoids patching `window.fetch` globally. |
-| Keep `electronAPI` and add `antigravityShell` separately | Preserves 01-01 retry / packaged helpers while exposing a minimal read-only shell surface. |
+| `window-all-closed` → `app.quit()` on all platforms (including darwin) | Matches 02-CONTEXT: closing the last window stops the app like Quit; avoids activate path with no running backend. |
+| Bind-shaped failures use `dialog`; generic readiness failure uses in-window error page + relaunch Retry | One primary surface per failure class; avoids double prompts. |
+| `bootPackagedShell` reused from `activate` when zero windows | Rare after quit-on-last-window; covers edge relaunch. |
 
 ### Open items
 
 - Pin exact Electron major for native rebuild alignment during implementation.
 - Validate CORS / load URL host alignment if proxy or origins differ between dev and packaged builds.
+- Run human checklist in [02-VERIFICATION.md](./phases/02-backend-lifecycle/02-VERIFICATION.md) on packaged builds (orphan process, port conflict, skeleton timing).
 
 ### Blockers
 
@@ -60,10 +57,11 @@
 
 ## Session continuity
 
-- **Last session:** 2026-04-05 — `/gsd-execute-phase 1`: plans **01-01** and **01-02** executed; **gsd-verifier** **passed** (8/8 must-haves); [01-VERIFICATION.md](./phases/01-http-served-dashboard-express-origin/01-VERIFICATION.md).
-- **Next action:** Phase 2 — `/gsd-discuss-phase 2` or `/gsd-plan-phase 2`. If you use strict plan sign-off, run manual checks in 01-02-SUMMARY and reply **approved** in chat (optional; verifier already passed).
+- **Last session:** 2026-04-06 — Phase 2 executed (`02-01`–`02-03`): main-process lifecycle, IPC/relaunch/dialogs, web shell gate; **02-VERIFICATION.md** recorded.
+- **Next action:** Phase 3 — `/gsd-discuss-phase 3` or `/gsd-plan-phase 3`.
 - **Resume file:** None
 - **Research:** [research/SUMMARY.md](./research/SUMMARY.md) — stack and phase ordering validated.
 
 ---
-*STATE initialized: 2026-04-05*
+*STATE initialized: 2026-04-05*  
+*Last updated: 2026-04-06*
